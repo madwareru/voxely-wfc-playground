@@ -1,0 +1,308 @@
+(
+    stride: 10,
+    tile_step: 2.0,
+    tile_width: 1.0,
+    mappings: {
+        2: (
+            north_east: (bottom: Air, up: Air),
+            north_west: (bottom: Ground, up: Air),
+            south_east: (bottom: Ground, up: Air),
+            south_west: (bottom: Air, up: Air)
+        ),
+        3: (
+            north_east: (bottom: Air, up: Air),
+            north_west: (bottom: Ground, up: Ground),
+            south_east: (bottom: Ground, up: Air),
+            south_west: (bottom: Air, up: Air)
+        ),
+        4: (
+            north_east: (bottom: Air, up: Air),
+            north_west: (bottom: Ground, up: Ground),
+            south_east: (bottom: Ground, up: Ground),
+            south_west: (bottom: Air, up: Air)
+        ),
+        5: (
+            north_east: (bottom: Air, up: Air),
+            north_west: (bottom: Ground, up: Ground),
+            south_east: (bottom: Air, up: Air),
+            south_west: (bottom: Air, up: Air)
+        ),
+        6: (
+            north_east: (bottom: Air, up: Air),
+            north_west: (bottom: Ground, up: Air),
+            south_east: (bottom: Air, up: Air),
+            south_west: (bottom: Air, up: Air)
+        ),
+
+        13: (
+            north_east: (bottom: Ground, up: Ground),
+            north_west: (bottom: Ground, up: Ground),
+            south_east: (bottom: Air, up: Air),
+            south_west: (bottom: Air, up: Air)
+        ),
+        14: (
+            north_east: (bottom: Ground, up: Ground),
+            north_west: (bottom: Ground, up: Air),
+            south_east: (bottom: Air, up: Air),
+            south_west: (bottom: Air, up: Air)
+        ),
+        15: (
+            north_east: (bottom: Ground, up: Air),
+            north_west: (bottom: Ground, up: Ground),
+            south_east: (bottom: Air, up: Air),
+            south_west: (bottom: Air, up: Air)
+        ),
+        16: (
+            north_east: (bottom: Ground, up: Air),
+            north_west: (bottom: Ground, up: Air),
+            south_east: (bottom: Air, up: Air),
+            south_west: (bottom: Air, up: Air)
+        ),
+
+        20: (
+            north_east: (bottom: Ground, up: Ground),
+            north_west: (bottom: Ground, up: Ground),
+            south_east: (bottom: Air, up: Air),
+            south_west: (bottom: Ground, up: Ground)
+        ),
+        21: (
+            north_east: (bottom: Ground, up: Air),
+            north_west: (bottom: Ground, up: Ground),
+            south_east: (bottom: Air, up: Air),
+            south_west: (bottom: Ground, up: Ground)
+        ),
+        22: (
+            north_east: (bottom: Ground, up: Ground),
+            north_west: (bottom: Ground, up: Ground),
+            south_east: (bottom: Air, up: Air),
+            south_west: (bottom: Ground, up: Air)
+        ),
+        23: (
+            north_east: (bottom: Ground, up: Ground),
+            north_west: (bottom: Ground, up: Air),
+            south_east: (bottom: Air, up: Air),
+            south_west: (bottom: Ground, up: Air)
+        ),
+        24: (
+            north_east: (bottom: Ground, up: Air),
+            north_west: (bottom: Ground, up: Ground),
+            south_east: (bottom: Air, up: Air),
+            south_west: (bottom: Ground, up: Air)
+        ),
+        25: (
+            north_east: (bottom: Ground, up: Air),
+            north_west: (bottom: Ground, up: Air),
+            south_east: (bottom: Air, up: Air),
+            south_west: (bottom: Ground, up: Ground)
+        ),
+        26: (
+            north_east: (bottom: Ground, up: Air),
+            north_west: (bottom: Ground, up: Air),
+            south_east: (bottom: Air, up: Air),
+            south_west: (bottom: Ground, up: Air)
+        ),
+
+        32: (
+            north_east: (bottom: Ground, up: Ground),
+            north_west: (bottom: Ground, up: Air),
+            south_east: (bottom: Ground, up: Air),
+            south_west: (bottom: Ground, up: Ground)
+        ),
+        33: (
+            north_east: (bottom: Ground, up: Ground),
+            north_west: (bottom: Ground, up: Ground),
+            south_east: (bottom: Ground, up: Air),
+            south_west: (bottom: Ground, up: Ground)
+        ),
+        34: (
+            north_east: (bottom: Ground, up: Ground),
+            north_west: (bottom: Ground, up: Ground),
+            south_east: (bottom: Ground, up: Air),
+            south_west: (bottom: Ground, up: Air)
+        ),
+        35: (
+            north_east: (bottom: Ground, up: Air),
+            north_west: (bottom: Ground, up: Ground),
+            south_east: (bottom: Ground, up: Air),
+            south_west: (bottom: Ground, up: Air)
+        ),
+        36: (
+            north_east: (bottom: Ground, up: Air),
+            north_west: (bottom: Ground, up: Air),
+            south_east: (bottom: Ground, up: Air),
+            south_west: (bottom: Ground, up: Air)
+        ),
+
+        40: (
+            north_east: (bottom: Ground, up: Ground),
+            north_west: (bottom: Ground, up: Ground),
+            south_east: (bottom: Water, up: Air),
+            south_west: (bottom: Ground, up: Ground)
+        ),
+        41: (
+            north_east: (bottom: Water, up: Air),
+            north_west: (bottom: Ground, up: Ground),
+            south_east: (bottom: Water, up: Air),
+            south_west: (bottom: Ground, up: Ground)
+        ),
+        42: (
+            north_east: (bottom: Water, up: Water),
+            north_west: (bottom: Ground, up: Ground),
+            south_east: (bottom: Water, up: Air),
+            south_west: (bottom: Ground, up: Air)
+        ),
+        43: (
+            north_east: (bottom: Water, up: Water),
+            north_west: (bottom: Ground, up: Ground),
+            south_east: (bottom: Air, up: Air),
+            south_west: (bottom: Air, up: Air)
+        ),
+        44: (
+            north_east: (bottom: Water, up: Air),
+            north_west: (bottom: Ground, up: Air),
+            south_east: (bottom: Air, up: Air),
+            south_west: (bottom: Air, up: Air)
+        ),
+        45: (
+            north_east: (bottom: Water, up: Air),
+            north_west: (bottom: Ground, up: Air),
+            south_east: (bottom: Ground, up: Air),
+            south_west: (bottom: Ground, up: Air)
+        ),
+        46: (
+            north_east: (bottom: Water, up: Air),
+            north_west: (bottom: Ground, up: Air),
+            south_east: (bottom: Water, up: Air),
+            south_west: (bottom: Ground, up: Air)
+        ),
+
+        50: (
+            north_east: (bottom: Water, up: Air),
+            north_west: (bottom: Ground, up: Ground),
+            south_east: (bottom: Ground, up: Ground),
+            south_west: (bottom: Water, up: Air)
+        ),
+        51: (
+            north_east: (bottom: Water, up: Air),
+            north_west: (bottom: Ground, up: Ground),
+            south_east: (bottom: Water, up: Air),
+            south_west: (bottom: Water, up: Air)
+        ),
+        52: (
+            north_east: (bottom: Water, up: Water),
+            north_west: (bottom: Water, up: Water),
+            south_east: (bottom: Water, up: Air),
+            south_west: (bottom: Water, up: Air)
+        ),
+        53: (
+            north_east: (bottom: Water, up: Water),
+            north_west: (bottom: Water, up: Water),
+            south_east: (bottom: Air, up: Air),
+            south_west: (bottom: Air, up: Air)
+        ),
+        54: (
+            north_east: (bottom: Water, up: Air),
+            north_west: (bottom: Water, up: Air),
+            south_east: (bottom: Air, up: Air),
+            south_west: (bottom: Air, up: Air)
+        ),
+        55: (
+            north_east: (bottom: Ground, up: Air),
+            north_west: (bottom: Water, up: Air),
+            south_east: (bottom: Water, up: Air),
+            south_west: (bottom: Ground, up: Air)
+        ),
+        56: (
+            north_east: (bottom: Water, up: Air),
+            north_west: (bottom: Water, up: Air),
+            south_east: (bottom: Water, up: Air),
+            south_west: (bottom: Water, up: Air)
+        ),
+
+        60: (
+            north_east: (bottom: Ground, up: Ground),
+            north_west: (bottom: Water, up: Water),
+            south_east: (bottom: Ground, up: Ground),
+            south_west: (bottom: Water, up: Air)
+        ),
+        61: (
+            north_east: (bottom: Water, up: Water),
+            north_west: (bottom: Ground, up: Ground),
+            south_east: (bottom: Water, up: Air),
+            south_west: (bottom: Ground, up: Ground)
+        ),
+        62: (
+            north_east: (bottom: Ground, up: Ground),
+            north_west: (bottom: Water, up: Water),
+            south_east: (bottom: Ground, up: Air),
+            south_west: (bottom: Water, up: Air)
+        ),
+        63: (
+            north_east: (bottom: Ground, up: Ground),
+            north_west: (bottom: Water, up: Water),
+            south_east: (bottom: Air, up: Air),
+            south_west: (bottom: Air, up: Air)
+        ),
+        64: (
+            north_east: (bottom: Ground, up: Air),
+            north_west: (bottom: Water, up: Air),
+            south_east: (bottom: Air, up: Air),
+            south_west: (bottom: Air, up: Air)
+        ),
+        65: (
+            north_east: (bottom: Air, up: Air),
+            north_west: (bottom: Water, up: Air),
+            south_east: (bottom: Air, up: Air),
+            south_west: (bottom: Air, up: Air)
+        ),
+        66: (
+            north_east: (bottom: Ground, up: Air),
+            north_west: (bottom: Water, up: Air),
+            south_east: (bottom: Water, up: Air),
+            south_west: (bottom: Water, up: Air)
+        ),
+
+        70: (
+            north_east: (bottom: Ground, up: Ground),
+            north_west: (bottom: Water, up: Water),
+            south_east: (bottom: Ground, up: Ground),
+            south_west: (bottom: Air, up: Air)
+        ),
+        71: (
+            north_east: (bottom: Water, up: Water),
+            north_west: (bottom: Ground, up: Ground),
+            south_east: (bottom: Air, up: Air),
+            south_west: (bottom: Ground, up: Ground)
+        ),
+        72: (
+            north_east: (bottom: Water, up: Water),
+            north_west: (bottom: Ground, up: Ground),
+            south_east: (bottom: Air, up: Air),
+            south_west: (bottom: Ground, up: Air)
+        ),
+        73: (
+            north_east: (bottom: Ground, up: Ground),
+            north_west: (bottom: Water, up: Water),
+            south_east: (bottom: Ground, up: Air),
+            south_west: (bottom: Air, up: Air)
+        ),
+        74: (
+            north_east: (bottom: Water, up: Water),
+            north_west: (bottom: Water, up: Water),
+            south_east: (bottom: Water, up: Water),
+            south_west: (bottom: Water, up: Air)
+        ),
+        75: (
+            north_east: (bottom: Water, up: Air),
+            north_west: (bottom: Water, up: Air),
+            south_east: (bottom: Water, up: Air),
+            south_west: (bottom: Air, up: Air)
+        ),
+        76: (
+            north_east: (bottom: Water, up: Water),
+            north_west: (bottom: Water, up: Water),
+            south_east: (bottom: Water, up: Water),
+            south_west: (bottom: Air, up: Air)
+        ),
+    }
+)
