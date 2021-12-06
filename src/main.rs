@@ -12,7 +12,7 @@ fn main() {
         },
         |mut ctx| {
         orom_miniquad::UserData::owning(
-            demo_stage::CollapseDemoStage::new(&mut ctx, [20, 4, 20]),
+            demo_stage::CollapseDemoStage::new(&mut ctx, [20, 5, 20]),
             ctx
         )
     });

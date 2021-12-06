@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::thread;
 use std::time::Instant;
 use orom_miniquad::{Context, KeyCode, KeyMods, MouseButton, PassAction};
 use simple_tiled_wfc::errors::WfcError;
@@ -30,6 +32,8 @@ pub struct CollapseDemoStage {
     mouse_y: f32,
     grab_start_mouse_x: Option<f32>,
     grab_start_mouse_y: Option<f32>,
+    compound_results_receiver: Receiver<Result<Vec<usize>, WfcError>>,
+    compound_results_transmitter: Sender<Result<Vec<usize>, WfcError>>,
     can_grab: bool,
     ry: f32,
     time: f32,
@@ -43,6 +47,8 @@ impl CollapseDemoStage {
         let [x_size, y_size, z_size] = sizes;
         let mesh = super::geometry::MeshData::parse_ply(TILES_PLY_CONTENT);
         let pieces = mesh.split(tile_config.tile_step, tile_config.tile_width);
+
+        let (compound_results_transmitter, compound_results_receiver) = channel();
 
         let mut piece_tile_configs = Vec::new();
         for piece_entry in pieces.iter().step_by(4) {
@@ -151,7 +157,7 @@ impl CollapseDemoStage {
             pieces_for_voxel_mesh.insert(piece_tile_configs[i], vec);
         }
 
-        let mut voxel_mesh = VoxelMesh::new(
+        let voxel_mesh = VoxelMesh::new(
             ctx,
             pieces_for_voxel_mesh,
             x_size,
@@ -159,28 +165,19 @@ impl CollapseDemoStage {
             y_size
         );
 
-        for i in 0..x_size {
-            for j in 0..z_size {
-                voxel_mesh.set_tile_unchecked(i, j, 0, TileConfigEntry {
-                    north_east: TileConfigEntryColumn { bottom: CellType::Water, up: CellType::Air },
-                    north_west: TileConfigEntryColumn { bottom: CellType::Water, up: CellType::Air },
-                    south_east: TileConfigEntryColumn { bottom: CellType::Water, up: CellType::Air },
-                    south_west: TileConfigEntryColumn { bottom: CellType::Water, up: CellType::Air }
-                })
-            }
-        }
-
         let view_proj = pitch_yaw_camera_view_mat(
             [0.0, 25.0, -25.0].into(), 45.0f32.to_radians(), 0.0,
             60.0f32.to_radians(), ctx.screen_size().0 / ctx.screen_size().1, 0.01, 250.0
         );
         let inv_view_proj = view_proj.inverse();
 
-        Self {
+        let mut res = Self {
             instant: Instant::now(),
             x_size,
             y_size,
             z_size,
+            compound_results_transmitter,
+            compound_results_receiver,
             piece_tile_configs,
             modules,
             water_plane_module_id,
@@ -196,44 +193,49 @@ impl CollapseDemoStage {
             time: 0.0,
             ry: 0.0,
             grab_start_ry: None
-        }
+        };
+
+        res.generate_map();
+
+        res
     }
 
     pub fn generate_map(&mut self) {
         let _sw = StopWatch::named("generating a map");
-        let collapse_result = self.collapse();
-        if let Ok(result_indices) = collapse_result {
-            let row_size = self.x_size;
-            let stride = row_size * self.z_size;
-            for idx in 0..result_indices.len() {
-                let i = (idx % stride) % row_size;
-                let j = (idx % stride) / row_size;
-                let k = idx / stride;
-                self.voxel_mesh.set_tile_unchecked(i, j, k, self.piece_tile_configs[result_indices[idx]]);
-            }
-        }
+        self.collapse();
     }
 
-    fn collapse(&mut self) -> Result<Vec<usize>, WfcError> {
-        let mut wfc_context = WfcContext::new(&self.modules, self.x_size, self.z_size, self.y_size);
-        let centre_z = self.z_size as f32 / 2.0;
-        let centre_x = self.x_size as f32 / 2.0;
-        for j in 0..self.z_size {
-            for i in 0..self.x_size {
-                let dz = j as f32 - centre_z;
-                let dx = i as f32 - centre_x;
-                if dz*dz + dx*dx > 75.0 {
-                    for k in 0..self.y_size - 1 {
-                        wfc_context.set_module(
-                            k, i, j,
-                            if k == 0 { self.water_plane_module_id } else { self.air_module_id }
-                        );
+    fn collapse(&mut self) {
+        let tx = self.compound_results_transmitter.clone();
+        let modules = self.modules.clone();
+
+        let (x_size, z_size, y_size) = (self.x_size, self.z_size, self.y_size);
+        let (water_plane_module_id, air_module_id) = (self.water_plane_module_id, self.air_module_id);
+
+        thread::spawn(move || {
+            let tx = tx;
+            let modules = modules;
+            let mut wfc_context = WfcContext::new(&modules, x_size, z_size, y_size);
+            let centre_z = z_size as f32 / 2.0;
+            let centre_x = x_size as f32 / 2.0;
+            for j in 0..z_size {
+                for i in 0..x_size {
+                    let dz = j as f32 - centre_z;
+                    let dx = i as f32 - centre_x;
+                    if dz*dz + dx*dx > 75.0 {
+                        for k in 0..y_size - 1 {
+                            wfc_context.set_module(
+                                k, i, j,
+                                if k == 0 { water_plane_module_id } else { air_module_id }
+                            );
+                        }
                     }
+                    wfc_context.set_module(y_size - 1, i, j, air_module_id);
                 }
-                wfc_context.set_module(self.y_size - 1, i, j, self.air_module_id);
             }
-        }
-        wfc_context.collapse(10000)
+            let result = wfc_context.collapse(10000);
+            tx.send(result);
+        });
     }
 }
 
@@ -249,6 +251,23 @@ impl orom_miniquad::EventHandler for CollapseDemoStage {
             self.ry = grab_start_ry + (self.mouse_x - grab_start_x) / 100.0
         }
 
+        match self.compound_results_receiver.try_recv() {
+            Ok(Ok(result_indices)) => {
+                let row_size = self.x_size;
+                let stride = row_size * self.z_size;
+                for idx in 0..result_indices.len() {
+                    let i = (idx % stride) % row_size;
+                    let j = (idx % stride) / row_size;
+                    let k = idx / stride;
+                    self.voxel_mesh.set_tile_unchecked(i, j, k, self.piece_tile_configs[result_indices[idx]]);
+                }
+            }
+            Ok(Err(_)) => {
+                println!("Error during generation!")
+            }
+            _ => {}
+        }
+
         self.voxel_mesh.update(ctx);
 
         self.view_proj = pitch_yaw_camera_view_mat(
@@ -261,15 +280,13 @@ impl orom_miniquad::EventHandler for CollapseDemoStage {
     fn draw(&mut self, ctx: &mut Context) {
         let model = Mat4::from_rotation_y(self.ry);
 
-        let mvp = self.view_proj * model;
-
         ctx.begin_default_pass(PassAction::Clear {
             color: Some((0.10, 0.06, 0.18, 1.0)),
             depth: Some(1.0),
             stencil: None,
         });
 
-        self.voxel_mesh.draw(ctx, mvp, self.time);
+        self.voxel_mesh.draw(ctx, self.view_proj, model, self.time);
 
         ctx.end_render_pass();
         ctx.commit_frame();

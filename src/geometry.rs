@@ -4,10 +4,13 @@ use std::str::FromStr;
 use std::usize;
 
 #[derive(Copy, Clone, Debug)]
+#[repr(C)]
 pub struct VertexData {
     pub position: [f32; 3],
     pub normal: [f32; 3],
-    pub color: [f32; 3]
+    pub color: [f32; 3],
+    pub uvw: [f32; 3],
+    pub ao: f32
 }
 
 #[derive(Clone, Debug)]
@@ -105,6 +108,8 @@ impl MeshData {
             let mut position = [0.0f32; 3];
             let mut normal = [0.0f32; 3];
             let mut color = [0.0f32; 3];
+            let uvw = [0.0f32; 3];
+            let ao = 1.0;
             for i in 0..3 {
                 position[i] = f32::from_str(vertex_data.next().unwrap()).unwrap();
             }
@@ -125,7 +130,7 @@ impl MeshData {
                 normal[2] = n;
             }
 
-            vertices.push(VertexData { position, normal, color })
+            vertices.push(VertexData { position, normal, color, uvw, ao })
         }
 
         for _ in 0..face_count {
@@ -212,6 +217,16 @@ impl MeshData {
                             *component *= 2.0 / width;
                             // posterizing values so we will not suffer from micro "seams":
                             *component = (*component * 100000.0).round() / 100000.0;
+                        }
+
+                        let normal_magnitude =
+                            (new_vert.normal[0]*new_vert.normal[0] +
+                            new_vert.normal[1]*new_vert.normal[1] +
+                            new_vert.normal[2]*new_vert.normal[2]).sqrt();
+
+                        for component in new_vert.normal.iter_mut() {
+                            // normalize normals (just in case)
+                            *component = *component / normal_magnitude;
                         }
 
                         vertices.push(new_vert);
