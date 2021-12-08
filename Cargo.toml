@@ -15,3 +15,8 @@ parry3d = "0.7.1"
 rand = "0.8.4"
 rayon = "1.5.1"
 egui = "0.15"
+
+[profile.release]
+lto = true
+opt-level = 3
+panic = 'abort'
