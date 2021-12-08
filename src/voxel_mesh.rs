@@ -12,8 +12,8 @@ use crate::utility::StopWatch;
 use rayon::iter::ParallelIterator;
 use rayon::iter::IndexedParallelIterator;
 
-const NUM_SAMPLES: usize = 100;
-const SUB_GROUP_SIZE: usize = 9_000_000_001; //8*8*128;
+const NUM_SAMPLES: usize = 50;
+const SUB_GROUP_SIZE: usize = 3000;
 
 struct AaBbEntry {
     aabb: AABB,
