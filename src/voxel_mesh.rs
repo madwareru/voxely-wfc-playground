@@ -388,13 +388,10 @@ impl VoxelMesh {
         let dir: Vector<Real> = self.trivec[ix].normal.into();
         let dir = dir.normalize();
 
-        /*
         let mut offset = super::utility::random_direction_on_a_unit_sphere();
         while offset.dot(&dir) < 0.25 {
             offset = super::utility::random_direction_on_a_unit_sphere();
         }
-        */
-        let offset = dir;
         let r0 = self.integrate_vertex_ext(
             sample_no,
             num_samples,
@@ -402,9 +399,6 @@ impl VoxelMesh {
             dir
         );
 
-        r0
-
-        /*
         offset = super::utility::random_direction_on_a_unit_sphere();
         while offset.dot(&dir) < 0.25 {
             offset = super::utility::random_direction_on_a_unit_sphere();
@@ -439,7 +433,6 @@ impl VoxelMesh {
         );
 
         r0.min(r1).min(r2).min(r3)
-        */
     }
 
     fn integrate_vertex_ext(&self, sample_no: usize, num_samples: usize, origin: Point<Real>, dir: Vector<Real>) -> f32 {
