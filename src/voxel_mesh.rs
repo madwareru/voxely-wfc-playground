@@ -3,16 +3,15 @@ use glam::{Mat4};
 use orom_miniquad::{CullFace, FilterMode, PipelineParams, TextureAccess, TextureFormat, TextureKind, TextureParams, TextureWrap};
 use parry3d::bounding_volume::AABB;
 use parry3d::math::{Point, Real, Vector};
-use parry3d::query::{RayCast};
-use parry3d::shape::Triangle;
+use parry3d::query::{Ray, RayCast, RayIntersection};
+use parry3d::shape::{FeatureId, Triangle};
 use rayon::prelude::IntoParallelIterator;
 use crate::geometry::VertexData;
 use crate::tile_config::{CellType, TileConfigEntry};
-use crate::utility::StopWatch;
 use rayon::iter::ParallelIterator;
 
-const NUM_SAMPLES: usize = 128;
-const SUB_GROUP_SIZE: usize = 12;
+const NUM_SAMPLES: usize = 16;
+const SUB_GROUP_SIZE: usize = 128;
 
 struct AaBbEntry {
     aabb: AABB,
@@ -39,6 +38,72 @@ pub struct VoxelMesh {
     is_dirty: bool,
     trivec: Vec<VertexData>,
     aabb_storage: Vec<AaBbEntry>
+}
+
+struct HeightPlane {
+    height: f32
+}
+
+impl RayCast for HeightPlane {
+    fn cast_local_ray_and_get_normal(&self, ray: &Ray, max_toi: Real, _solid: bool) -> Option<RayIntersection> {
+        if ray.dir.y == 0.0 { None } else { Some(ray.dir.y) }
+            .and_then(|d| Some(-(ray.origin.y - self.height) / d))
+            .and_then(|toi| {
+                if toi < 0.0 || toi > max_toi {
+                    None
+                } else {
+                    Some(RayIntersection { toi, normal: [0.0, 1.0, 0.0].into(), feature: FeatureId::Face(0) })
+                }
+            })
+    }
+}
+
+impl VoxelMesh {
+    pub(crate) fn get_cell_by_ray(
+         &self,
+         origin: Point<Real>,
+         direction: Vector<Real>
+    ) -> Option<(Point<Real>, [usize; 3])> {
+        let mut min_dist = None;
+        let mut result = None;
+
+        let ray = Ray::new(origin, direction);
+
+        for height in (0..self.height).map(|it| it as f32 * 2.0) {
+            let plane = HeightPlane { height };
+            if let Some(t) = plane.cast_local_ray(&ray, 250.0, true) {
+                let mut point: Point<Real> = ray.origin + ray.dir * t;
+                point.x = (point.x + 1.0).round();
+                point.z = (point.z - 1.0).round();
+
+                let (i, j, k) = (
+                    ((point.x + self.width as f32) / 2.0) as isize,
+                    (-((point.z - self.depth as f32) / 2.0)) as isize,
+                    ((point.y) / 2.0) as usize
+                );
+                if i < 0 || j < 0 { continue; }
+
+                let (i, j) = (i as usize, j as usize);
+
+                // we are looking for the cells, which placed at corners, so we are interested
+                // in finding any cell including most right and most bottom ones, and as we remember,
+                // most right id for the cell is a width, when most bottom id is depth
+                if i > self.width || j > self.depth { continue; }
+
+                if self.get_cell_data(i, j, k).eq(&CellType::Air) ||
+                    !self.get_cell_data(i, j, k+1).eq(&CellType::Air) {
+                    continue;
+                }
+
+                if min_dist.is_none() || min_dist.unwrap() > t {
+                    min_dist = Some(t);
+                    result = Some((point, [i, j, k]));
+                }
+            }
+        }
+
+        result
+    }
 }
 
 impl VoxelMesh {
@@ -107,7 +172,7 @@ impl VoxelMesh {
             shader,
             PipelineParams {
                 cull_face: CullFace::Back,
-                front_face_order: orom_miniquad::FrontFaceOrder::Clockwise,
+                front_face_order: orom_miniquad::FrontFaceOrder::CounterClockwise,
                 depth_test: orom_miniquad::Comparison::LessOrEqual,
                 depth_write: true,
                 depth_write_offset: None,
@@ -132,10 +197,6 @@ impl VoxelMesh {
             is_dirty: false,
             trivec: Vec::with_capacity(900_000)
         }
-    }
-
-    pub fn mark_pending(&mut self) {
-        self.intenal_state = InternalState::Pending;
     }
 
     pub fn set_grid_vertex_unchecked(
@@ -169,6 +230,10 @@ impl VoxelMesh {
         self.set_grid_vertex_unchecked(i + 1, j + 1, k + 1, value.south_east.up);
     }
 
+    pub fn get_cell_data(&self, i: usize, j: usize, k: usize) -> CellType {
+        self.grid_data[k][j][i]
+    }
+
     fn get_tile_config_entry(&self, i: usize, j: usize, k: usize) -> super::tile_config::TileConfigEntry {
         TileConfigEntry {
             north_west: super::tile_config::TileConfigEntryColumn {
@@ -190,13 +255,13 @@ impl VoxelMesh {
         }
     }
 
-    fn get_ao_baking_progress(&self) -> Option<f32> {
+    pub fn get_ao_baking_progress(&self) -> Option<f32> {
         match self.intenal_state {
             InternalState::GeneratingAO { subgroup_no } => {
                 Some(
                     (
                         100.0 * (subgroup_no * SUB_GROUP_SIZE) as f32 / (self.trivec.len() as f32)
-                    ).clamp(0.0, 1.0)
+                    ).clamp(0.0, 100.0)
                 )
             },
             _ => None
@@ -269,7 +334,6 @@ impl VoxelMesh {
                 }
 
                 {
-                    let _sw = StopWatch::named("ambient occlusion generation step");
                     let current_offset = subgroup_no * SUB_GROUP_SIZE;
                     if current_offset >= self.trivec.len() {
                         self.bindings.vertex_buffers[0].update(ctx, &self.trivec);
@@ -285,6 +349,7 @@ impl VoxelMesh {
                                 self.trivec[idx].ao = ao / NUM_SAMPLES as f32;
                             }
                         }
+                        self.bindings.vertex_buffers[0].update(ctx, &self.trivec);
                         self.intenal_state = InternalState::GeneratingAO { subgroup_no: subgroup_no + 1 };
                     }
                 }
@@ -423,7 +488,7 @@ mod shader {
         view_dir = normalize(-gl_Position.xyz);
         normal = (model * vec4(normal0, 0.0)).xyz;
 
-        light_direction = (model * vec4(normalize(vec3(-0.3, -0.2, 0.25)), 0.0)).xyz;
+        light_direction = (model * vec4(normalize(vec3(0.3, -0.3, 0.25)), 0.0)).xyz;
 
         color = color0;
         ao = ao0;
@@ -446,9 +511,9 @@ mod shader {
         lowp vec3 ld_opposite = normalize(-light_direction);
         lowp float att = max(0.0, dot(normal, ld_opposite)) * 0.4;
 
-        lowp float ambient = (ao * 1.5 + 0.5) * 0.6;
+        lowp float ambient = (ao * 1.5 + 0.6) * 0.6;
 
-        lowp vec3 diffuse = //color *
+        lowp vec3 diffuse = color *
         (
             ambient * vec3(0.6, 0.6, 1.0) +
             att * vec3(1.0, 0.65, 0.5)

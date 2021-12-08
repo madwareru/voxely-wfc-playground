@@ -3,6 +3,7 @@ pub mod demo_stage;
 pub mod tile_config;
 pub mod utility;
 pub mod voxel_mesh;
+pub mod selection_point_grid;
 
 fn main() {
     orom_miniquad::start(

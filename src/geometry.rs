@@ -103,13 +103,15 @@ impl MeshData {
         let mut vertices = Vec::with_capacity(vertex_count);
         let mut faces = Vec::with_capacity(face_count);
 
+        let uvw = [0.0f32; 3];
+        let ao = 0.9;
+
         for _ in 0..vertex_count {
             let mut vertex_data = lines.next().unwrap().split_whitespace().into_iter();
             let mut position = [0.0f32; 3];
             let mut normal = [0.0f32; 3];
             let mut color = [0.0f32; 3];
-            let uvw = [0.0f32; 3];
-            let ao = 1.0;
+
             for i in 0..3 {
                 position[i] = f32::from_str(vertex_data.next().unwrap()).unwrap();
             }

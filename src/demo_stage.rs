@@ -6,7 +6,11 @@ use orom_miniquad::{Context, KeyCode, KeyMods, MouseButton, PassAction};
 use simple_tiled_wfc::errors::WfcError;
 use simple_tiled_wfc::voxel_generation::{WfcContext, WfcModule};
 use glam::{Mat4, Vec3, Vec4, Vec4Swizzles};
+use orom_miniquad::egui_integration::EguiMq;
 use ron::de::from_reader;
+use egui::{Color32, TextStyle, FontDefinitions, FontFamily, Align2, Order};
+use parry3d::math::{Point, Real, Vector};
+use crate::selection_point_grid::SelectionPointGrid;
 use crate::tile_config::{CellType, TileConfigEntry, TileConfigEntryColumn};
 use crate::utility::StopWatch;
 use crate::voxel_mesh::VoxelMesh;
@@ -14,9 +18,15 @@ use crate::voxel_mesh::VoxelMesh;
 type CustomBitSet = [u8; 32];
 
 const TILES_PLY_CONTENT: &str = include_str!("../assets/wfc_parts.ply");
+const SELECTION_POINT_PLY_CONTENT: &str = include_str!("../assets/selection_point.ply");
 const CONFIG_BYTES: &[u8] = include_bytes!("../assets/tile_config.ron");
+pub const JETBRAINS_MONO_FONT: &[u8] = include_bytes!("../assets/JetBrainsMono-Medium.ttf");
+
+const NEAR_PLANE: f32 = 0.01;
+const FAR_PLANE: f32 = 250.0;
 
 pub struct CollapseDemoStage {
+    egui: EguiMq,
     instant: Instant,
     x_size: usize,
     y_size: usize,
@@ -26,10 +36,12 @@ pub struct CollapseDemoStage {
     air_module_id: usize,
     piece_tile_configs: Vec<TileConfigEntry>,
     voxel_mesh: VoxelMesh,
+    selection_grid: SelectionPointGrid,
     view_proj: Mat4,
-    inv_view_proj: Mat4,
+    inv_mvp: Mat4,
     mouse_x: f32,
     mouse_y: f32,
+    selection_screen_coords: Option<(Vec3, [usize; 3])>,
     grab_start_mouse_x: Option<f32>,
     grab_start_mouse_y: Option<f32>,
     compound_results_receiver: Receiver<Result<Vec<usize>, WfcError>>,
@@ -42,9 +54,46 @@ pub struct CollapseDemoStage {
 
 impl CollapseDemoStage {
     pub fn new(ctx: &mut orom_miniquad::Context, sizes: [usize; 3]) -> Self {
+        let egui = EguiMq::new(ctx);
+        let mut fonts = FontDefinitions::default();
+        fonts.font_data
+            .insert("JetBrains Mono".to_owned(), std::borrow::Cow::Borrowed(JETBRAINS_MONO_FONT));
+
+        fonts.fonts_for_family
+            .get_mut(&FontFamily::Proportional)
+            .unwrap()
+            .insert(0, "JetBrains Mono".to_owned());
+
+        fonts.fonts_for_family
+            .get_mut(&FontFamily::Monospace)
+            .unwrap()
+            .insert(0, "JetBrains Mono".to_owned());
+
+        if let Some(setting) = fonts.family_and_size.get_mut(&TextStyle::Button) {
+            *setting = (FontFamily::Monospace, 24.0);
+        }
+        if let Some(setting) = fonts.family_and_size.get_mut(&TextStyle::Heading) {
+            *setting = (FontFamily::Monospace, 32.0);
+        }
+        if let Some(setting) = fonts.family_and_size.get_mut(&TextStyle::Monospace) {
+            *setting = (FontFamily::Monospace, 24.0);
+        }
+        if let Some(setting) = fonts.family_and_size.get_mut(&TextStyle::Body) {
+            *setting = (FontFamily::Monospace, 24.0);
+        }
+        if let Some(setting) = fonts.family_and_size.get_mut(&TextStyle::Small) {
+            *setting = (FontFamily::Monospace, 24.0);
+        }
+
+        egui.egui_ctx().set_fonts(fonts);
+
         let tile_config: super::tile_config::TileConfig = from_reader(CONFIG_BYTES).unwrap();
 
         let [x_size, y_size, z_size] = sizes;
+
+        let selection_point_mesh =  super::geometry::MeshData::parse_ply(SELECTION_POINT_PLY_CONTENT);
+        let selection_grid = SelectionPointGrid::new(ctx, selection_point_mesh, x_size, z_size, y_size);
+
         let mesh = super::geometry::MeshData::parse_ply(TILES_PLY_CONTENT);
         let pieces = mesh.split(tile_config.tile_step, tile_config.tile_width);
 
@@ -172,6 +221,7 @@ impl CollapseDemoStage {
         let inv_view_proj = view_proj.inverse();
 
         let mut res = Self {
+            egui,
             instant: Instant::now(),
             x_size,
             y_size,
@@ -183,11 +233,13 @@ impl CollapseDemoStage {
             water_plane_module_id,
             air_module_id,
             voxel_mesh,
+            selection_grid,
             view_proj,
-            inv_view_proj,
+            inv_mvp: inv_view_proj,
             mouse_x: 0.0,
             mouse_y: 0.0,
             can_grab: false,
+            selection_screen_coords: None,
             grab_start_mouse_x: None,
             grab_start_mouse_y: None,
             time: 0.0,
@@ -203,6 +255,58 @@ impl CollapseDemoStage {
     pub fn generate_map(&mut self) {
         let _sw = StopWatch::named("generating a map");
         self.collapse();
+    }
+
+    fn ui(&mut self) {
+        let egui_ctx = self.egui.egui_ctx().clone();
+
+        if let Some(progress) = self.voxel_mesh.get_ao_baking_progress() {
+            egui::Area::new("ao")
+                .anchor(Align2::CENTER_BOTTOM, [0.0, 0.0])
+                .order(Order::Background)
+                .interactable(false)
+                .movable(false)
+                .show(&egui_ctx, |ui| {
+                    ui.add(egui::Label::new(format!("Generating ambient occlusion: {}%", progress.round()))
+                        .heading()
+                        .background_color(Color32::from_rgba_unmultiplied(255, 255, 255, 5))
+                        .text_color(Color32::from_rgb(0, 0, 0))
+                        .strong()
+                    );
+                });
+        }
+
+        if let Some(selection) = self.selection_screen_coords {
+            egui::Area::new("coords")
+                .anchor(Align2::LEFT_BOTTOM, [0.0, 0.0])
+                .order(Order::Background)
+                .interactable(false)
+                .movable(false)
+                .show(&egui_ctx, |ui| {
+                    ui.add(egui::Label::new(format!("[{}, {}, {}]", selection.1[0], selection.1[1], selection.1[2]))
+                        .heading()
+                        .background_color(Color32::from_rgba_unmultiplied(255, 255, 255, 5))
+                        .text_color(Color32::from_rgb(0, 0, 0))
+                        .strong()
+                    );
+                });
+        }
+
+        egui::Window::new("menu")
+            .anchor(Align2::CENTER_TOP, [0.0, 0.0])
+            .show(&egui_ctx, |ui| {
+                ui.vertical_centered_justified(|ui| {
+                    if ui.button("Generate").clicked() {
+                        self.generate_map();
+                    }
+
+                    ui.separator();
+
+                    if ui.button("Quit (esc)").clicked() {
+                        std::process::exit(0);
+                    }
+                });
+            });
     }
 
     fn collapse(&mut self) {
@@ -234,7 +338,7 @@ impl CollapseDemoStage {
                 }
             }
             let result = wfc_context.collapse(10000);
-            tx.send(result);
+            tx.send(result).unwrap();
         });
     }
 }
@@ -272,50 +376,123 @@ impl orom_miniquad::EventHandler for CollapseDemoStage {
 
         self.view_proj = pitch_yaw_camera_view_mat(
             [0.0, 25.0, -25.0].into(), 45.0f32.to_radians(), 0.0,
-            60.0f32.to_radians(), ctx.screen_size().0 / ctx.screen_size().1, 0.01, 250.0
+            60.0f32.to_radians(), ctx.screen_size().0 / ctx.screen_size().1, NEAR_PLANE, FAR_PLANE
         );
-        self.inv_view_proj = self.view_proj.inverse();
+        self.inv_mvp = (self.view_proj *  Mat4::from_rotation_y(-self.ry)).inverse();
+        let remapped_mouse_coords = (
+            (self.mouse_x / ctx.screen_size().0 - 0.5) * 2.0,
+            -(self.mouse_y / ctx.screen_size().1 - 0.5) * 2.0
+        );
+
+        let v_near = unproj_vec(
+            [remapped_mouse_coords.0, remapped_mouse_coords.1, -0.2].into(),
+            self.view_proj *  Mat4::from_rotation_y(-self.ry)
+        );
+        let v_far = unproj_vec(
+            [remapped_mouse_coords.0, remapped_mouse_coords.1, 0.2].into(),
+            self.view_proj *  Mat4::from_rotation_y(-self.ry)
+        );
+
+        let origin: Point<Real> = [v_near.x, v_near.y, v_near.z].into();
+
+        let dir = v_far - v_near;
+        let dir: Vector<Real> = [dir.x, dir.y, dir.z].into();
+        let dir = dir.normalize();
+
+        let selected_tile = self.voxel_mesh.get_cell_by_ray(origin, dir);
+        self.selection_grid.update(ctx, &self.voxel_mesh, selected_tile.map(|it| it.1));
+
+        self.selection_screen_coords = selected_tile.map(|coords| {
+            (
+                proj_vec(
+                    [coords.0.x, coords.0.y, coords.0.z].into(),
+                    self.view_proj *  Mat4::from_rotation_y(-self.ry)
+                ),
+                coords.1
+            )
+        });
     }
 
     fn draw(&mut self, ctx: &mut Context) {
-        let model = Mat4::from_rotation_y(self.ry);
+        self.egui.begin_frame(ctx);
+        self.ui();
+        self.egui.end_frame(ctx);
 
-        ctx.begin_default_pass(PassAction::Clear {
-            color: Some((0.10, 0.06, 0.18, 1.0)),
-            depth: Some(1.0),
-            stencil: None,
-        });
+        // Draw things behind egui here
 
-        self.voxel_mesh.draw(ctx, self.view_proj, model, self.time);
+        {
+            let model = Mat4::from_rotation_y(-self.ry);
 
-        ctx.end_render_pass();
+            ctx.begin_default_pass(PassAction::Clear {
+                color: Some((0.10, 0.06, 0.18, 1.0)),
+                depth: Some(1.0),
+                stencil: None,
+            });
+
+            self.voxel_mesh.draw(ctx, self.view_proj, model, self.time);
+            self.selection_grid.draw(ctx, self.view_proj, model);
+
+            ctx.end_render_pass();
+        }
+
+        self.egui.draw(ctx);
+
+        // Draw things in front of egui here
+
         ctx.commit_frame();
     }
 
-    fn mouse_motion_event(&mut self, _ctx: &mut Context, x: f32, y: f32) {
+    fn mouse_motion_event(&mut self, ctx: &mut Context, x: f32, y: f32) {
         self.mouse_x = x;
         self.mouse_y = y;
-    }
-
-    fn mouse_button_down_event(&mut self, _ctx: &mut Context, button: MouseButton, _x: f32, _y: f32) {
-        if let( true, MouseButton::Left ) = (self.can_grab, button) {
-            self.grab_start_mouse_x = Some(self.mouse_x);
-            self.grab_start_mouse_y = Some(self.mouse_y);
-            self.grab_start_ry = Some(self.ry);
-        }
-    }
-
-    fn mouse_button_up_event(&mut self, _ctx: &mut Context, button: MouseButton, _x: f32, _y: f32) {
-        if let( true, MouseButton::Left ) = (self.can_grab, button) {
+        self.egui.mouse_motion_event(ctx, x, y);
+        if self.egui.egui_ctx().is_pointer_over_area() && self.can_grab {
             self.grab_start_mouse_x = None;
             self.grab_start_mouse_y = None;
             self.grab_start_ry = None;
         }
     }
 
-    fn key_down_event(&mut self, ctx: &mut Context, keycode: KeyCode, _keymods: KeyMods, _repeat: bool,) {
+    fn mouse_wheel_event(&mut self, ctx: &mut Context, dx: f32, dy: f32) {
+        self.egui.mouse_wheel_event(ctx, dx, dy);
+    }
+
+    fn mouse_button_down_event(&mut self, ctx: &mut Context, button: MouseButton, x: f32, y: f32) {
+        self.egui.mouse_button_down_event(ctx, button, x, y);
+        if !self.egui.egui_ctx().is_pointer_over_area() {
+            if let( true, MouseButton::Left ) = (self.can_grab, button) {
+                self.grab_start_mouse_x = Some(self.mouse_x);
+                self.grab_start_mouse_y = Some(self.mouse_y);
+                self.grab_start_ry = Some(self.ry);
+            }
+        }
+    }
+
+    fn mouse_button_up_event(&mut self, ctx: &mut Context, button: MouseButton, x: f32, y: f32) {
+        self.egui.mouse_button_up_event(ctx, button, x, y);
+        if !self.egui.egui_ctx().is_pointer_over_area() {
+            if let( true, MouseButton::Left ) = (self.can_grab, button) {
+                self.grab_start_mouse_x = None;
+                self.grab_start_mouse_y = None;
+                self.grab_start_ry = None;
+            }
+        }
+    }
+
+    fn char_event(&mut self, _ctx: &mut Context, character: char, _keymods: KeyMods, repeat: bool) {
+        self.egui.char_event(character);
+        if self.egui.egui_ctx().wants_keyboard_input() { return; }
+        if character == '~' && !repeat {
+            //self.show_ui = !self.show_ui;
+        }
+    }
+
+    fn key_down_event(&mut self, ctx: &mut Context, keycode: KeyCode, keymods: KeyMods, _repeat: bool,) {
+        self.egui.key_down_event(ctx, keycode, keymods);
         match keycode {
-            KeyCode::Escape => ctx.quit(),
+            KeyCode::Escape => {
+                ctx.quit()
+            },
             KeyCode::Space => {
                 self.can_grab = true;
             }
@@ -323,7 +500,8 @@ impl orom_miniquad::EventHandler for CollapseDemoStage {
         }
     }
 
-    fn key_up_event(&mut self, _ctx: &mut Context, keycode: KeyCode, _keymods: KeyMods) {
+    fn key_up_event(&mut self, _ctx: &mut Context, keycode: KeyCode, keymods: KeyMods) {
+        self.egui.key_up_event(keycode, keymods);
         match keycode {
             KeyCode::Enter => { self.generate_map(); },
             KeyCode::Space => {
@@ -352,11 +530,23 @@ fn pitch_yaw_camera_view_mat(
 
     let center = position + view_vector.xyz();
 
-    let lookat_mat = glam::Mat4::look_at_rh(
+    let lookat_mat = glam::Mat4::look_at_lh(
         position,
         center,
         up_vector
     );
-    let proj = Mat4::perspective_rh_gl(fov, aspect_ratio, z_near, z_far);
+    let proj = Mat4::perspective_lh(fov, aspect_ratio, z_near, z_far);
     proj * lookat_mat
+}
+
+fn unproj_vec(v: Vec3, mat: Mat4) -> Vec3 {
+    let v: Vec4 = [v.x, v.y, v.z, 1.0].into();
+    let v = mat.inverse() * v;
+    [v.x / v.w, v.y / v.w, v.z / v.w].into()
+}
+
+fn proj_vec(v: Vec3, mat: Mat4) -> Vec3 {
+    let v: Vec4 = [v.x, v.y, v.z, 1.0].into();
+    let v = mat * v;
+    [v.x / v.w, v.y / v.w, v.z / v.w].into()
 }
