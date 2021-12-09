@@ -366,8 +366,8 @@ impl VoxelMesh {
                 }
 
                 {
-                    let dir = super::utility::sun_flower_direction_on_a_unit_sphere(NUM_SAMPLES, sample_no);
                     let _sw = StopWatch::named("generate ao");
+                    let dir = super::utility::sun_flower_direction_on_a_unit_sphere(NUM_SAMPLES, sample_no);
                     let current_offset = subgroup_no * SUB_GROUP_SIZE;
                     if current_offset < self.trivec.len() {
                         let current_range = current_offset..(current_offset + SUB_GROUP_SIZE)
@@ -388,7 +388,15 @@ impl VoxelMesh {
                             self.trivec.extend_from_slice(&self.trivec_tmp);
                         }
                         self.bindings.vertex_buffers[0].update(ctx, &self.trivec);
-                        self.intenal_state = InternalState::GeneratingAO { subgroup_no: subgroup_no + 1, sample_no };
+                        self.intenal_state = if current_offset + SUB_GROUP_SIZE >= self.trivec.len() {
+                            if sample_no < (NUM_SAMPLES - 1) {
+                                InternalState::GeneratingAO { subgroup_no: 0, sample_no: sample_no + 1 }
+                            } else {
+                                InternalState::Ready
+                            }
+                        } else {
+                            InternalState::GeneratingAO { subgroup_no: subgroup_no + 1, sample_no }
+                        };
                     } else {
                         if sample_no < (NUM_SAMPLES - 1) {
                             self.intenal_state = InternalState::GeneratingAO { subgroup_no: 0, sample_no: sample_no + 1 };
