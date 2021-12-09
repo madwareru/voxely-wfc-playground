@@ -8,11 +8,11 @@ use parry3d::shape::{FeatureId, Triangle};
 use rayon::prelude::IntoParallelIterator;
 use crate::geometry::VertexData;
 use crate::tile_config::{CellType, TileConfigEntry};
-use crate::utility::StopWatch;
+use crate::utility::{StopWatch};
 use rayon::iter::ParallelIterator;
 use rayon::iter::IndexedParallelIterator;
 
-const NUM_SAMPLES: usize = 50;
+const NUM_SAMPLES: usize = 128;
 const SUB_GROUP_SIZE: usize = 3000;
 
 struct AaBbEntry {
@@ -88,19 +88,44 @@ impl VoxelMesh {
 
                 let (i, j) = (i as usize, j as usize);
 
-                // we are looking for the cells, which placed at corners, so we are interested
-                // in finding any cell including most right and most bottom ones, and as we remember,
-                // most right id for the cell is a width, when most bottom id is depth
-                if i > self.width || j > self.depth { continue; }
+                let mut min_d = 0.0;
+                let mut min_ijk = None;
+                for ii in (if i > 0 { i - 1 } else { 0 })..=(if i >= self.width { self.width } else { i + 1 }) {
+                    for jj in (if j > 0 { j - 1 } else { 0 })..=(if j >= self.depth { self.depth } else { j + 1 }) {
+                        if ii > self.width || jj > self.depth { continue; }
+                        if self.get_cell_data(ii, jj, k).eq(&CellType::Air) ||
+                            !self.get_cell_data(ii, jj, k+1).eq(&CellType::Air) {
+                            continue;
+                        }
+                        let x = 2.0 * (ii) as f32 - self.width as f32;
+                        let y = 2.0 * (k) as f32;
+                        let z = -2.0 * (jj) as f32 + self.depth as f32;
+                        let pp: Point<Real> = [x, y, z].into();
+                        let d = point - pp;
+                        let d = d.dot(&d);
 
-                if self.get_cell_data(i, j, k).eq(&CellType::Air) ||
-                    !self.get_cell_data(i, j, k+1).eq(&CellType::Air) {
-                    continue;
+                        if d > 0.01 { continue; }
+
+                        match min_ijk {
+                            None => {
+                                min_d = d;
+                                min_ijk = Some([ii, jj, k]);
+                            },
+                            Some(_) => {
+                                if d < min_d {
+                                    min_d = d;
+                                    min_ijk = Some([ii, jj, k]);
+                                }
+                            }
+                        };
+                    }
                 }
 
-                if min_dist.is_none() || min_dist.unwrap() > t {
-                    min_dist = Some(t);
-                    result = Some((point, [i, j, k]));
+                if let Some([i, j, k]) = min_ijk {
+                    if min_dist.is_none() || min_dist.unwrap() > t {
+                        min_dist = Some(t);
+                        result = Some((point, [i, j, k]));
+                    }
                 }
             }
         }
@@ -341,32 +366,32 @@ impl VoxelMesh {
                 }
 
                 {
+                    let dir = super::utility::sun_flower_direction_on_a_unit_sphere(NUM_SAMPLES, sample_no);
                     let _sw = StopWatch::named("generate ao");
                     let current_offset = subgroup_no * SUB_GROUP_SIZE;
                     if current_offset < self.trivec.len() {
                         let current_range = current_offset..(current_offset + SUB_GROUP_SIZE)
                             .min(self.trivec.len());
 
-                        let mut trivec_tmp = vec![];
-                        std::mem::swap(&mut self.trivec_tmp, &mut trivec_tmp); // oh no
+                        let mut trivec_tmp = std::mem::take(&mut self.trivec_tmp);
 
                         (&mut trivec_tmp[current_range]).into_par_iter().enumerate().for_each(|(idx, vx): (_, &mut VertexData)| {
-                            let ao: f32 = self.integrate_vertex(idx + current_offset, sample_no, NUM_SAMPLES);
+                            let ao: f32 = self.integrate_vertex(idx + current_offset, dir);
                             let prev_ao = self.trivec[idx + current_offset].ao;
                             vx.ao += (ao - prev_ao) / (sample_no + 1) as f32;
                         });
-                        std::mem::swap(&mut self.trivec_tmp, &mut trivec_tmp);
+
+                        self.trivec_tmp = trivec_tmp;
 
                         {
                             self.trivec.clear();
-                            self.trivec.extend(self.trivec_tmp.iter().cloned()); // oh no
+                            self.trivec.extend_from_slice(&self.trivec_tmp);
                         }
                         self.bindings.vertex_buffers[0].update(ctx, &self.trivec);
                         self.intenal_state = InternalState::GeneratingAO { subgroup_no: subgroup_no + 1, sample_no };
                     } else {
                         if sample_no < (NUM_SAMPLES - 1) {
                             self.intenal_state = InternalState::GeneratingAO { subgroup_no: 0, sample_no: sample_no + 1 };
-                            println!("sample {} done, subgroup_no: {}", sample_no, subgroup_no);
                         } else {
                             self.bindings.vertex_buffers[0].update(ctx, &self.trivec);
                             self.intenal_state = InternalState::Ready;
@@ -383,77 +408,41 @@ impl VoxelMesh {
         }
     }
 
-    fn integrate_vertex(&self, ix: usize, sample_no: usize, num_samples: usize) -> f32 {
+    fn integrate_vertex(&self, ix: usize, ray_dir: Vector<Real>) -> f32 {
         let origin: Point<Real> = self.trivec[ix].position.into();
         let dir: Vector<Real> = self.trivec[ix].normal.into();
         let dir = dir.normalize();
 
-        let mut offset = super::utility::random_direction_on_a_unit_sphere();
-        while offset.dot(&dir) < 0.25 {
-            offset = super::utility::random_direction_on_a_unit_sphere();
+        for _ in 0..4 {
+            let mut offset = super::utility::random_direction_on_a_unit_sphere();
+            while offset.dot(&dir) < 0.25 {
+                offset = super::utility::random_direction_on_a_unit_sphere();
+            }
+            if self.integrate_vertex_impl(
+                ray_dir,
+                origin + offset * 0.01,
+                dir
+            ) {
+                return 0.0;
+            }
         }
-        let r0 = self.integrate_vertex_ext(
-            sample_no,
-            num_samples,
-            origin + offset * 0.01,
-            dir
-        );
-
-        offset = super::utility::random_direction_on_a_unit_sphere();
-        while offset.dot(&dir) < 0.25 {
-            offset = super::utility::random_direction_on_a_unit_sphere();
-        }
-        let r1 = self.integrate_vertex_ext(
-            sample_no,
-            num_samples,
-            origin + offset * 0.01,
-            dir
-        );
-
-        offset = super::utility::random_direction_on_a_unit_sphere();
-        while offset.dot(&dir) < 0.25 {
-            offset = super::utility::random_direction_on_a_unit_sphere();
-        }
-        let r2 = self.integrate_vertex_ext(
-            sample_no,
-            num_samples,
-            origin + offset * 0.01,
-            dir
-        );
-
-        offset = super::utility::random_direction_on_a_unit_sphere();
-        while offset.dot(&dir) < 0.25 {
-            offset = super::utility::random_direction_on_a_unit_sphere();
-        }
-        let r3 = self.integrate_vertex_ext(
-            sample_no,
-            num_samples,
-            origin + offset * 0.01,
-            dir
-        );
-
-        r0.min(r1).min(r2).min(r3)
+        1.0
     }
 
-    fn integrate_vertex_ext(&self, sample_no: usize, num_samples: usize, origin: Point<Real>, dir: Vector<Real>) -> f32 {
+    fn integrate_vertex_impl(&self, ray_dir: Vector<Real>, origin: Point<Real>, dir: Vector<Real>) -> bool {
         const RAY_LENGTH: f32 = 256.0;
 
-        let next_ray = super::utility::sun_flower_ray_on_a_hemisphere(
-            num_samples,
-            sample_no,
-            origin,
-            dir
-        );
+        let next_ray = if dir.dot(&ray_dir) >= 0.0 {
+            Ray::new(origin, ray_dir)
+        } else {
+            Ray::new(origin, -ray_dir)
+        };
 
-        for aabb_idx in 0..self.aabb_storage.len() {
-            if !self.aabb_storage[aabb_idx].aabb.intersects_local_ray(&next_ray, RAY_LENGTH) {
-                continue;
-            }
-
-            let start = self.aabb_storage[aabb_idx].start_vertex_id;
-            let end = self.aabb_storage[aabb_idx].end_vertex_id;
-
-            for offset in (start..=end).step_by(3) {
+        for aabb_entry in self.aabb_storage
+            .iter()
+            .filter(|it| it.aabb.intersects_local_ray(&next_ray, RAY_LENGTH) )
+        {
+            for offset in (aabb_entry.start_vertex_id..=aabb_entry.end_vertex_id).step_by(3) {
                 let next_triangle = Triangle::new(
                     self.trivec[offset].position.into(),
                     self.trivec[offset + 1].position.into(),
@@ -463,11 +452,11 @@ impl VoxelMesh {
                 let is_not_culled = -(next_triangle.normal().unwrap()).dot(&next_ray.dir) < 0.0;
 
                 if is_not_culled && next_triangle.intersects_local_ray(&next_ray, RAY_LENGTH) {
-                    return 0.0;
+                    return true;
                 }
             }
         }
-        1.0
+        false
     }
 
     pub fn draw(&self, ctx: &mut orom_miniquad::Context, view_proj: Mat4, model: Mat4, time: f32) {
