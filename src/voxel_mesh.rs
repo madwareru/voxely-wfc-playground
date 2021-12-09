@@ -8,10 +8,12 @@ use parry3d::shape::{FeatureId, Triangle};
 use rayon::prelude::IntoParallelIterator;
 use crate::geometry::VertexData;
 use crate::tile_config::{CellType, TileConfigEntry};
+use crate::utility::StopWatch;
 use rayon::iter::ParallelIterator;
+use rayon::iter::IndexedParallelIterator;
 
-const NUM_SAMPLES: usize = 16;
-const SUB_GROUP_SIZE: usize = 128;
+const NUM_SAMPLES: usize = 50;
+const SUB_GROUP_SIZE: usize = 3000;
 
 struct AaBbEntry {
     aabb: AABB,
@@ -22,7 +24,7 @@ struct AaBbEntry {
 #[derive(Copy, Clone)]
 enum InternalState {
     Pending,
-    GeneratingAO { subgroup_no: usize },
+    GeneratingAO { subgroup_no: usize, sample_no: usize },
     Ready
 }
 
@@ -37,6 +39,7 @@ pub struct VoxelMesh {
     bindings: orom_miniquad::Bindings,
     is_dirty: bool,
     trivec: Vec<VertexData>,
+    trivec_tmp: Vec<VertexData>,
     aabb_storage: Vec<AaBbEntry>
 }
 
@@ -195,7 +198,8 @@ impl VoxelMesh {
             bindings,
             aabb_storage,
             is_dirty: false,
-            trivec: Vec::with_capacity(900_000)
+            trivec: Vec::with_capacity(900_000),
+            trivec_tmp: Vec::with_capacity(900_000)
         }
     }
 
@@ -257,10 +261,10 @@ impl VoxelMesh {
 
     pub fn get_ao_baking_progress(&self) -> Option<f32> {
         match self.intenal_state {
-            InternalState::GeneratingAO { subgroup_no } => {
+            InternalState::GeneratingAO { sample_no, .. } => {
                 Some(
                     (
-                        100.0 * (subgroup_no * SUB_GROUP_SIZE) as f32 / (self.trivec.len() as f32)
+                        100.0 * sample_no as f32 / (NUM_SAMPLES as f32)
                     ).clamp(0.0, 100.0)
                 )
             },
@@ -275,6 +279,7 @@ impl VoxelMesh {
                 self.is_dirty = false;
 
                 self.trivec.clear();
+                self.trivec_tmp.clear();
                 self.aabb_storage.clear();
 
                 for k in 0..self.height {
@@ -323,10 +328,12 @@ impl VoxelMesh {
                         }
                     }
                 }
+                self.trivec_tmp.clear();
+                self.trivec_tmp.extend(self.trivec.iter().cloned());
                 self.bindings.vertex_buffers[0].update(ctx, &self.trivec);
-                self.intenal_state = InternalState::GeneratingAO { subgroup_no: 0 };
+                self.intenal_state = InternalState::GeneratingAO { subgroup_no: 0, sample_no: 0 };
             }
-            InternalState::GeneratingAO { subgroup_no } => {
+            InternalState::GeneratingAO { subgroup_no, sample_no } => {
 
                 if self.is_dirty {
                     self.intenal_state = InternalState::Pending;
@@ -334,23 +341,36 @@ impl VoxelMesh {
                 }
 
                 {
+                    let _sw = StopWatch::named("generate ao");
                     let current_offset = subgroup_no * SUB_GROUP_SIZE;
-                    if current_offset >= self.trivec.len() {
-                        self.bindings.vertex_buffers[0].update(ctx, &self.trivec);
-                        self.intenal_state = InternalState::Ready;
-                    } else {
+                    if current_offset < self.trivec.len() {
                         let current_range = current_offset..(current_offset + SUB_GROUP_SIZE)
                             .min(self.trivec.len());
-                        for idx in current_range {
-                            if idx < self.trivec.len() {
-                                let ao: f32 = (0..NUM_SAMPLES).into_par_iter()
-                                    .map(|sample_no| self.integrate_vertex(idx, sample_no, NUM_SAMPLES))
-                                    .sum();
-                                self.trivec[idx].ao = ao / NUM_SAMPLES as f32;
-                            }
+
+                        let mut trivec_tmp = vec![];
+                        std::mem::swap(&mut self.trivec_tmp, &mut trivec_tmp); // oh no
+
+                        (&mut trivec_tmp[current_range]).into_par_iter().enumerate().for_each(|(idx, vx): (_, &mut VertexData)| {
+                            let ao: f32 = self.integrate_vertex(idx + current_offset, sample_no, NUM_SAMPLES);
+                            let prev_ao = self.trivec[idx + current_offset].ao;
+                            vx.ao += (ao - prev_ao) / (sample_no + 1) as f32;
+                        });
+                        std::mem::swap(&mut self.trivec_tmp, &mut trivec_tmp);
+
+                        {
+                            self.trivec.clear();
+                            self.trivec.extend(self.trivec_tmp.iter().cloned()); // oh no
                         }
                         self.bindings.vertex_buffers[0].update(ctx, &self.trivec);
-                        self.intenal_state = InternalState::GeneratingAO { subgroup_no: subgroup_no + 1 };
+                        self.intenal_state = InternalState::GeneratingAO { subgroup_no: subgroup_no + 1, sample_no };
+                    } else {
+                        if sample_no < (NUM_SAMPLES - 1) {
+                            self.intenal_state = InternalState::GeneratingAO { subgroup_no: 0, sample_no: sample_no + 1 };
+                            println!("sample {} done, subgroup_no: {}", sample_no, subgroup_no);
+                        } else {
+                            self.bindings.vertex_buffers[0].update(ctx, &self.trivec);
+                            self.intenal_state = InternalState::Ready;
+                        }
                     }
                 }
 

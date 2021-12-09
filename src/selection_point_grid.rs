@@ -68,7 +68,7 @@ impl SelectionPointGrid {
             }
         }
 
-        let mut selections_buffer = orom_miniquad::Buffer::stream(
+        let selections_buffer = orom_miniquad::Buffer::stream(
             ctx,
             orom_miniquad::BufferType::VertexBuffer,
             selections.len() * std::mem::size_of::<f32>(),

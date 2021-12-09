@@ -1,3 +1,6 @@
+#![allow(unused_imports)]
+#![allow(dead_code)]
+
 pub mod geometry;
 pub mod demo_stage;
 pub mod tile_config;
