@@ -24,6 +24,25 @@ pub const JETBRAINS_MONO_FONT: &[u8] = include_bytes!("../assets/JetBrainsMono-M
 
 const NEAR_PLANE: f32 = 0.01;
 const FAR_PLANE: f32 = 250.0;
+const MAX_X_ROT: f32 = std::f32::consts::PI / 4.0;
+const MIN_X_ROT: f32 = -std::f32::consts::PI / 6.0;
+
+trait Lerp : Copy {
+    fn lerp(self, other: &Self, t: f32) -> Self;
+    fn strange_lerp(self, other: &Self, t: f32, strangeness: f32) -> Self {
+        let strangeness = strangeness.clamp(0.0, 1.0);
+        let usual_lerp = self.lerp(other, t);
+        let t = (1.0 + (std::f32::consts::PI * (1.0 + t)).cos()) / 2.0;
+        usual_lerp.lerp(&self.lerp(other, t), strangeness)
+    }
+}
+
+impl Lerp for f32 {
+    fn lerp(self, other: &Self, t: f32) -> Self {
+        let t = t.clamp(0.0, 1.0);
+        self * (1.0 - t) + *other * t
+    }
+}
 
 pub struct CollapseDemoStage {
     egui: EguiMq,
@@ -48,8 +67,10 @@ pub struct CollapseDemoStage {
     compound_results_transmitter: Sender<Result<Vec<usize>, WfcError>>,
     can_grab: bool,
     ry: f32,
+    rx: f32,
     time: f32,
-    grab_start_ry: Option<f32>
+    grab_start_ry: Option<f32>,
+    grab_start_rx: Option<f32>
 }
 
 impl CollapseDemoStage {
@@ -244,7 +265,9 @@ impl CollapseDemoStage {
             grab_start_mouse_y: None,
             time: 0.0,
             ry: 0.0,
-            grab_start_ry: None
+            rx: 0.3,
+            grab_start_ry: None,
+            grab_start_rx: None
         };
 
         res.generate_map();
@@ -341,6 +364,13 @@ impl CollapseDemoStage {
             tx.send(result).unwrap();
         });
     }
+
+    fn get_model_matrix(&self) -> Mat4 {
+        let t = 0.0.strange_lerp(&1.0, self.rx, 0.3);
+        let x_a = MIN_X_ROT.strange_lerp(&MAX_X_ROT, t, 0.3);
+
+        Mat4::from_rotation_x(-x_a) * Mat4::from_rotation_y(-self.ry)
+    }
 }
 
 impl orom_miniquad::EventHandler for CollapseDemoStage {
@@ -350,9 +380,10 @@ impl orom_miniquad::EventHandler for CollapseDemoStage {
         self.time += elapsed.as_secs_f32();
         self.instant = next_instant;
 
-        if let (Some(grab_start_x), Some(_grab_start_y), Some(grab_start_ry)) =
-            (self.grab_start_mouse_x, self.grab_start_mouse_y, self.grab_start_ry) {
-            self.ry = grab_start_ry + (self.mouse_x - grab_start_x) / 100.0
+        if let (Some(grab_start_x), Some(grab_start_y), Some(grab_start_ry), Some(grab_start_rx)) =
+            (self.grab_start_mouse_x, self.grab_start_mouse_y, self.grab_start_ry, self.grab_start_rx) {
+            self.ry = grab_start_ry + (self.mouse_x - grab_start_x) / 100.0;
+            self.rx = (grab_start_rx + (self.mouse_y - grab_start_y) / 300.0).clamp(0.0, 1.0);
         }
 
         match self.compound_results_receiver.try_recv() {
@@ -378,7 +409,7 @@ impl orom_miniquad::EventHandler for CollapseDemoStage {
             [0.0, 25.0, -25.0].into(), 45.0f32.to_radians(), 0.0,
             60.0f32.to_radians(), ctx.screen_size().0 / ctx.screen_size().1, NEAR_PLANE, FAR_PLANE
         );
-        self.inv_mvp = (self.view_proj *  Mat4::from_rotation_y(-self.ry)).inverse();
+        self.inv_mvp = (self.view_proj * self.get_model_matrix()).inverse();
         let remapped_mouse_coords = (
             (self.mouse_x / ctx.screen_size().0 - 0.5) * 2.0,
             -(self.mouse_y / ctx.screen_size().1 - 0.5) * 2.0
@@ -386,11 +417,11 @@ impl orom_miniquad::EventHandler for CollapseDemoStage {
 
         let v_near = unproj_vec(
             [remapped_mouse_coords.0, remapped_mouse_coords.1, -0.2].into(),
-            self.view_proj *  Mat4::from_rotation_y(-self.ry)
+            self.view_proj * self.get_model_matrix()
         );
         let v_far = unproj_vec(
             [remapped_mouse_coords.0, remapped_mouse_coords.1, 0.2].into(),
-            self.view_proj *  Mat4::from_rotation_y(-self.ry)
+            self.view_proj * self.get_model_matrix()
         );
 
         let origin: Point<Real> = [v_near.x, v_near.y, v_near.z].into();
@@ -406,7 +437,7 @@ impl orom_miniquad::EventHandler for CollapseDemoStage {
             (
                 proj_vec(
                     [coords.0.x, coords.0.y, coords.0.z].into(),
-                    self.view_proj *  Mat4::from_rotation_y(-self.ry)
+                    self.view_proj * self.get_model_matrix()
                 ),
                 coords.1
             )
@@ -421,7 +452,7 @@ impl orom_miniquad::EventHandler for CollapseDemoStage {
         // Draw things behind egui here
 
         {
-            let model = Mat4::from_rotation_y(-self.ry);
+            let model = self.get_model_matrix();
 
             ctx.begin_default_pass(PassAction::Clear {
                 color: Some((0.10, 0.06, 0.18, 1.0)),
@@ -450,6 +481,7 @@ impl orom_miniquad::EventHandler for CollapseDemoStage {
             self.grab_start_mouse_x = None;
             self.grab_start_mouse_y = None;
             self.grab_start_ry = None;
+            self.grab_start_rx = None;
         }
     }
 
@@ -464,6 +496,7 @@ impl orom_miniquad::EventHandler for CollapseDemoStage {
                 self.grab_start_mouse_x = Some(self.mouse_x);
                 self.grab_start_mouse_y = Some(self.mouse_y);
                 self.grab_start_ry = Some(self.ry);
+                self.grab_start_rx = Some(self.rx);
             }
         }
     }
@@ -475,6 +508,7 @@ impl orom_miniquad::EventHandler for CollapseDemoStage {
                 self.grab_start_mouse_x = None;
                 self.grab_start_mouse_y = None;
                 self.grab_start_ry = None;
+                self.grab_start_rx = None;
             }
         }
     }
@@ -509,6 +543,7 @@ impl orom_miniquad::EventHandler for CollapseDemoStage {
                 self.grab_start_mouse_x = None;
                 self.grab_start_mouse_y = None;
                 self.grab_start_ry = None;
+                self.grab_start_rx = None;
             }
             _ => {}
         }
