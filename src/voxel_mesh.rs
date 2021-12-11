@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use egui::CursorIcon::Default;
 use glam::{Mat4};
 use orom_miniquad::{CullFace, FilterMode, PipelineParams, TextureAccess, TextureFormat, TextureKind, TextureParams, TextureWrap};
 use parry3d::bounding_volume::AABB;
@@ -15,6 +16,7 @@ use rayon::iter::IndexedParallelIterator;
 const NUM_SAMPLES: usize = 128;
 const SUB_GROUP_SIZE: usize = 3000;
 
+#[derive(Copy, Clone)]
 struct AaBbEntry {
     aabb: AABB,
     start_vertex_id: usize,
@@ -40,7 +42,7 @@ pub struct VoxelMesh {
     is_dirty: bool,
     trivec: Vec<VertexData>,
     trivec_tmp: Vec<VertexData>,
-    aabb_storage: Vec<AaBbEntry>
+    aabb_storage: Vec<Vec<Vec<Option<AaBbEntry>>>>
 }
 
 struct HeightPlane {
@@ -212,7 +214,7 @@ impl VoxelMesh {
             }
         );
 
-        let aabb_storage = Vec::with_capacity(width * height * depth);
+        let aabb_storage = vec![vec![vec![Option::None;width];depth];height];
 
         Self {
             intenal_state: InternalState::Pending,
@@ -305,7 +307,10 @@ impl VoxelMesh {
 
                 self.trivec.clear();
                 self.trivec_tmp.clear();
-                self.aabb_storage.clear();
+
+                for entry in self.aabb_storage.iter_mut().flat_map(|it| it.iter_mut()) {
+                    entry.fill(Option::None);
+                }
 
                 for k in 0..self.height {
                     for j in 0..self.depth {
@@ -316,14 +321,15 @@ impl VoxelMesh {
                                 let y = 2.0 * (k) as f32;
                                 let z = -2.0 * (j) as f32 + self.depth as f32;
 
-                                self.aabb_storage.push(AaBbEntry {
-                                    aabb: AABB::new(
-                                        [x - 1.0, y - 1.0, z - 1.0].into(),
-                                        [x + 1.0, y + 1.0, z + 1.0].into()
-                                    ),
-                                    start_vertex_id: self.trivec.len(),
-                                    end_vertex_id: self.trivec.len() + verts.len() - 1
-                                });
+                                self.aabb_storage[k][j][i] =
+                                    Some(AaBbEntry {
+                                        aabb: AABB::new(
+                                            [x - 1.0, y - 1.0, z - 1.0].into(),
+                                            [x + 1.0, y + 1.0, z + 1.0].into()
+                                        ),
+                                        start_vertex_id: self.trivec.len(),
+                                        end_vertex_id: self.trivec.len() + verts.len() - 1
+                                    });
 
                                 for &v in verts.iter() {
                                     let mut uvw = [0.0f32; 3];
@@ -446,8 +452,8 @@ impl VoxelMesh {
             Ray::new(origin, -ray_dir)
         };
 
-        for aabb_entry in self.aabb_storage
-            .iter()
+        for aabb_entry in self.aabb_storage.iter().flat_map(|it| it.iter()).flat_map(|it| it.iter())
+            .filter_map(|it| *it)
             .filter(|it| it.aabb.intersects_local_ray(&next_ray, RAY_LENGTH) )
         {
             for offset in (aabb_entry.start_vertex_id..=aabb_entry.end_vertex_id).step_by(3) {
