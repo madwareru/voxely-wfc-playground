@@ -57,10 +57,8 @@ pub struct CollapseDemoStage {
     voxel_mesh: VoxelMesh,
     selection_grid: SelectionPointGrid,
     view_proj: Mat4,
-    inv_mvp: Mat4,
     mouse_x: f32,
     mouse_y: f32,
-    selection_screen_coords: Option<(Vec3, [usize; 3])>,
     grab_start_mouse_x: Option<f32>,
     grab_start_mouse_y: Option<f32>,
     compound_results_receiver: Receiver<Result<Vec<usize>, WfcError>>,
@@ -173,17 +171,19 @@ impl CollapseDemoStage {
         let water_plane_module_id = piece_tile_configs
             .iter()
             .enumerate()
-            .find(|(_, it)| {
+            .find_map(|(id, it)| {
                 let it = *it;
-                let it = *it;
-                it.eq(&TileConfigEntry{
+                if it.eq(&TileConfigEntry{
                     north_east: TileConfigEntryColumn { bottom: CellType::Water, up: CellType::Air },
                     north_west: TileConfigEntryColumn { bottom: CellType::Water, up: CellType::Air },
                     south_east: TileConfigEntryColumn { bottom: CellType::Water, up: CellType::Air },
                     south_west: TileConfigEntryColumn { bottom: CellType::Water, up: CellType::Air }
-                })
+                }) {
+                    Some(id)
+                } else {
+                    None
+                }
             })
-            .map(|it| it.0)
             .unwrap();
 
         let mut modules: Vec<WfcModule<CustomBitSet>> = vec![WfcModule::new(); piece_tile_configs.len()];
@@ -239,7 +239,6 @@ impl CollapseDemoStage {
             [0.0, 25.0, -25.0].into(), 45.0f32.to_radians(), 0.0,
             60.0f32.to_radians(), ctx.screen_size().0 / ctx.screen_size().1, 0.01, 250.0
         );
-        let inv_view_proj = view_proj.inverse();
 
         let mut res = Self {
             egui,
@@ -256,11 +255,9 @@ impl CollapseDemoStage {
             voxel_mesh,
             selection_grid,
             view_proj,
-            inv_mvp: inv_view_proj,
             mouse_x: 0.0,
             mouse_y: 0.0,
             can_grab: false,
-            selection_screen_coords: None,
             grab_start_mouse_x: None,
             grab_start_mouse_y: None,
             time: 0.0,
@@ -291,22 +288,6 @@ impl CollapseDemoStage {
                 .movable(false)
                 .show(&egui_ctx, |ui| {
                     ui.add(egui::Label::new(format!("Generating ambient occlusion: {}%", progress.round()))
-                        .heading()
-                        .background_color(Color32::from_rgba_unmultiplied(255, 255, 255, 5))
-                        .text_color(Color32::from_rgb(0, 0, 0))
-                        .strong()
-                    );
-                });
-        }
-
-        if let Some(selection) = self.selection_screen_coords {
-            egui::Area::new("coords")
-                .anchor(Align2::LEFT_BOTTOM, [0.0, 0.0])
-                .order(Order::Background)
-                .interactable(false)
-                .movable(false)
-                .show(&egui_ctx, |ui| {
-                    ui.add(egui::Label::new(format!("[{}, {}, {}]", selection.1[0], selection.1[1], selection.1[2]))
                         .heading()
                         .background_color(Color32::from_rgba_unmultiplied(255, 255, 255, 5))
                         .text_color(Color32::from_rgb(0, 0, 0))
@@ -409,7 +390,6 @@ impl orom_miniquad::EventHandler for CollapseDemoStage {
             [0.0, 25.0, -25.0].into(), 45.0f32.to_radians(), 0.0,
             60.0f32.to_radians(), ctx.screen_size().0 / ctx.screen_size().1, NEAR_PLANE, FAR_PLANE
         );
-        self.inv_mvp = (self.view_proj * self.get_model_matrix()).inverse();
         let remapped_mouse_coords = (
             (self.mouse_x / ctx.screen_size().0 - 0.5) * 2.0,
             -(self.mouse_y / ctx.screen_size().1 - 0.5) * 2.0
@@ -432,16 +412,6 @@ impl orom_miniquad::EventHandler for CollapseDemoStage {
 
         let selected_tile = self.voxel_mesh.get_cell_by_ray(origin, dir);
         self.selection_grid.update(ctx, &self.voxel_mesh, selected_tile.map(|it| it.1));
-
-        self.selection_screen_coords = selected_tile.map(|coords| {
-            (
-                proj_vec(
-                    [coords.0.x, coords.0.y, coords.0.z].into(),
-                    self.view_proj * self.get_model_matrix()
-                ),
-                coords.1
-            )
-        });
     }
 
     fn draw(&mut self, ctx: &mut Context) {

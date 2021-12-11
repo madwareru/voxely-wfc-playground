@@ -26,7 +26,6 @@ pub struct SelectionPointGrid {
     depth: usize,
     height: usize,
     faces_length: i32,
-    grid_data: Vec<Vec<Vec<SelectionPointState>>>,
     selections: Vec<f32>,
     pipeline: orom_miniquad::Pipeline,
     bindings: orom_miniquad::Bindings,
@@ -40,7 +39,6 @@ impl SelectionPointGrid {
         depth: usize,
         height: usize
     ) -> Self {
-        let grid_data = vec![vec![vec![SelectionPointState::NonSelectable; width + 1]; depth + 1]; height];
 
         let mut vertices = Vec::with_capacity(point_mesh.vertices.len() * 3);
         for v in point_mesh.vertices.iter() {
@@ -142,7 +140,6 @@ impl SelectionPointGrid {
             depth,
             height,
             faces_length,
-            grid_data,
             selections,
             pipeline,
             bindings

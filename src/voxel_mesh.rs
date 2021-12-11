@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use egui::CursorIcon::Default;
 use glam::{Mat4};
-use orom_miniquad::{CullFace, FilterMode, PipelineParams, TextureAccess, TextureFormat, TextureKind, TextureParams, TextureWrap};
+use orom_miniquad::{Context, CullFace, FilterMode, PipelineParams, TextureAccess, TextureFormat, TextureKind, TextureParams, TextureWrap};
 use parry3d::bounding_volume::AABB;
 use parry3d::math::{Point, Real, Vector};
 use parry3d::query::{Ray, RayCast, RayIntersection};
@@ -15,6 +15,7 @@ use rayon::iter::IndexedParallelIterator;
 
 const NUM_SAMPLES: usize = 128;
 const SUB_GROUP_SIZE: usize = 3000;
+const AO_TICKS_PER_FRAME: usize = 8;
 
 #[derive(Copy, Clone)]
 struct AaBbEntry {
@@ -301,125 +302,131 @@ impl VoxelMesh {
 
     pub fn update(&mut self, ctx: &mut orom_miniquad::Context) {
         match self.intenal_state {
-            InternalState::Pending => {
-                if !self.is_dirty { return; }
-                self.is_dirty = false;
-
-                self.trivec.clear();
-                self.trivec_tmp.clear();
-
-                for entry in self.aabb_storage.iter_mut().flat_map(|it| it.iter_mut()) {
-                    entry.fill(Option::None);
+            InternalState::Pending => self.prepare_mesh(ctx),
+            InternalState::GeneratingAO { .. } => {
+                let _sw = StopWatch::named("generate ao");
+                for _ in 0..AO_TICKS_PER_FRAME {
+                    self.tick_ao_generation(ctx);
                 }
-
-                for k in 0..self.height {
-                    for j in 0..self.depth {
-                        for i in 0..self.width {
-                            let entry = self.get_tile_config_entry(i, j, k);
-                            if let Some(verts) = self.pieces.get(&entry) {
-                                let x = 2.0 * (i) as f32 - self.width as f32;
-                                let y = 2.0 * (k) as f32;
-                                let z = -2.0 * (j) as f32 + self.depth as f32;
-
-                                self.aabb_storage[k][j][i] =
-                                    Some(AaBbEntry {
-                                        aabb: AABB::new(
-                                            [x - 1.0, y - 1.0, z - 1.0].into(),
-                                            [x + 1.0, y + 1.0, z + 1.0].into()
-                                        ),
-                                        start_vertex_id: self.trivec.len(),
-                                        end_vertex_id: self.trivec.len() + verts.len() - 1
-                                    });
-
-                                for &v in verts.iter() {
-                                    let mut uvw = [0.0f32; 3];
-                                    uvw[0] = (i as f32) / (self.width as f32);
-                                    uvw[0] += (v.position[0] + 1.0) / (self.width as f32 * 2.0);
-                                    uvw[0] = (1.0 - uvw[0]).clamp(0.0, 1.0);
-
-                                    uvw[1] = (k as f32) / (self.height as f32);
-                                    uvw[1] += ((v.position[1] + 1.0) / (self.height as f32 * 2.0)).clamp(0.0, 1.0);
-
-                                    uvw[2] = (j as f32) / (self.depth as f32);
-                                    uvw[2] -= (v.position[2] + 1.0) / (self.depth as f32 * 2.0);
-                                    uvw[2] = (1.0 - uvw[2]).clamp(0.0, 1.0);
-
-                                    let v = VertexData {
-                                        position: [
-                                            v.position[0] + x,
-                                            v.position[1] + y,
-                                            v.position[2] + z
-                                        ],
-                                        uvw,
-                                        ..v
-                                    };
-                                    self.trivec.push(v);
-                                }
-                            }
-                        }
-                    }
-                }
-                self.trivec_tmp.clear();
-                self.trivec_tmp.extend(self.trivec.iter().cloned());
-                self.bindings.vertex_buffers[0].update(ctx, &self.trivec);
-                self.intenal_state = InternalState::GeneratingAO { subgroup_no: 0, sample_no: 0 };
-            }
-            InternalState::GeneratingAO { subgroup_no, sample_no } => {
-
-                if self.is_dirty {
-                    self.intenal_state = InternalState::Pending;
-                    return;
-                }
-
-                {
-                    let _sw = StopWatch::named("generate ao");
-                    let dir = super::utility::sun_flower_direction_on_a_unit_sphere(NUM_SAMPLES, sample_no);
-                    let current_offset = subgroup_no * SUB_GROUP_SIZE;
-                    if current_offset < self.trivec.len() {
-                        let current_range = current_offset..(current_offset + SUB_GROUP_SIZE)
-                            .min(self.trivec.len());
-
-                        let mut trivec_tmp = std::mem::take(&mut self.trivec_tmp);
-
-                        (&mut trivec_tmp[current_range]).into_par_iter().enumerate().for_each(|(idx, vx): (_, &mut VertexData)| {
-                            let ao: f32 = self.integrate_vertex(idx + current_offset, dir);
-                            let prev_ao = self.trivec[idx + current_offset].ao;
-                            vx.ao += (ao - prev_ao) / (sample_no + 1) as f32;
-                        });
-
-                        self.trivec_tmp = trivec_tmp;
-
-                        {
-                            self.trivec.clear();
-                            self.trivec.extend_from_slice(&self.trivec_tmp);
-                        }
-                        self.bindings.vertex_buffers[0].update(ctx, &self.trivec);
-                        self.intenal_state = if current_offset + SUB_GROUP_SIZE >= self.trivec.len() {
-                            if sample_no < (NUM_SAMPLES - 1) {
-                                InternalState::GeneratingAO { subgroup_no: 0, sample_no: sample_no + 1 }
-                            } else {
-                                InternalState::Ready
-                            }
-                        } else {
-                            InternalState::GeneratingAO { subgroup_no: subgroup_no + 1, sample_no }
-                        };
-                    } else {
-                        if sample_no < (NUM_SAMPLES - 1) {
-                            self.intenal_state = InternalState::GeneratingAO { subgroup_no: 0, sample_no: sample_no + 1 };
-                        } else {
-                            self.bindings.vertex_buffers[0].update(ctx, &self.trivec);
-                            self.intenal_state = InternalState::Ready;
-                        }
-                    }
-                }
-
-            }
+            },
             InternalState::Ready => {
                 if self.is_dirty {
                     self.intenal_state = InternalState::Pending;
                 }
             }
         }
+    }
+
+    fn tick_ao_generation(&mut self, ctx: &mut Context) {
+        if let InternalState::GeneratingAO { subgroup_no, sample_no } = self.intenal_state {
+            if self.is_dirty {
+                self.intenal_state = InternalState::Pending;
+                return;
+            }
+
+            let dir = super::utility::sun_flower_direction_on_a_unit_sphere(NUM_SAMPLES, sample_no);
+            let current_offset = subgroup_no * SUB_GROUP_SIZE;
+            if current_offset < self.trivec.len() {
+                let current_range = current_offset..(current_offset + SUB_GROUP_SIZE)
+                    .min(self.trivec.len());
+
+                let mut trivec_tmp = std::mem::take(&mut self.trivec_tmp);
+
+                (&mut trivec_tmp[current_range]).into_par_iter().enumerate().for_each(|(idx, vx): (_, &mut VertexData)| {
+                    let ao: f32 = self.integrate_vertex(idx + current_offset, dir);
+                    let prev_ao = self.trivec[idx + current_offset].ao;
+                    vx.ao += (ao - prev_ao) / (sample_no + 1) as f32;
+                });
+
+                self.trivec_tmp = trivec_tmp;
+
+                {
+                    self.trivec.clear();
+                    self.trivec.extend_from_slice(&self.trivec_tmp);
+                }
+                self.bindings.vertex_buffers[0].update(ctx, &self.trivec);
+                self.intenal_state = if current_offset + SUB_GROUP_SIZE >= self.trivec.len() {
+                    if sample_no < (NUM_SAMPLES - 1) {
+                        InternalState::GeneratingAO { subgroup_no: 0, sample_no: sample_no + 1 }
+                    } else {
+                        InternalState::Ready
+                    }
+                } else {
+                    InternalState::GeneratingAO { subgroup_no: subgroup_no + 1, sample_no }
+                };
+            } else {
+                if sample_no < (NUM_SAMPLES - 1) {
+                    self.intenal_state = InternalState::GeneratingAO { subgroup_no: 0, sample_no: sample_no + 1 };
+                } else {
+                    self.bindings.vertex_buffers[0].update(ctx, &self.trivec);
+                    self.intenal_state = InternalState::Ready;
+                }
+            }
+        }
+    }
+
+    fn prepare_mesh(&mut self, ctx: &mut Context) {
+        if !self.is_dirty { return; }
+        self.is_dirty = false;
+
+        self.trivec.clear();
+        self.trivec_tmp.clear();
+
+        for entry in self.aabb_storage.iter_mut().flat_map(|it| it.iter_mut()) {
+            entry.fill(Option::None);
+        }
+
+        for k in 0..self.height {
+            for j in 0..self.depth {
+                for i in 0..self.width {
+                    let entry = self.get_tile_config_entry(i, j, k);
+                    if let Some(verts) = self.pieces.get(&entry) {
+                        let x = 2.0 * (i) as f32 - self.width as f32;
+                        let y = 2.0 * (k) as f32;
+                        let z = -2.0 * (j) as f32 + self.depth as f32;
+
+                        self.aabb_storage[k][j][i] =
+                            Some(AaBbEntry {
+                                aabb: AABB::new(
+                                    [x - 1.0, y - 1.0, z - 1.0].into(),
+                                    [x + 1.0, y + 1.0, z + 1.0].into()
+                                ),
+                                start_vertex_id: self.trivec.len(),
+                                end_vertex_id: self.trivec.len() + verts.len() - 1
+                            });
+
+                        for &v in verts.iter() {
+                            let mut uvw = [0.0f32; 3];
+                            uvw[0] = (i as f32) / (self.width as f32);
+                            uvw[0] += (v.position[0] + 1.0) / (self.width as f32 * 2.0);
+                            uvw[0] = (1.0 - uvw[0]).clamp(0.0, 1.0);
+
+                            uvw[1] = (k as f32) / (self.height as f32);
+                            uvw[1] += ((v.position[1] + 1.0) / (self.height as f32 * 2.0)).clamp(0.0, 1.0);
+
+                            uvw[2] = (j as f32) / (self.depth as f32);
+                            uvw[2] -= (v.position[2] + 1.0) / (self.depth as f32 * 2.0);
+                            uvw[2] = (1.0 - uvw[2]).clamp(0.0, 1.0);
+
+                            let v = VertexData {
+                                position: [
+                                    v.position[0] + x,
+                                    v.position[1] + y,
+                                    v.position[2] + z
+                                ],
+                                uvw,
+                                ..v
+                            };
+                            self.trivec.push(v);
+                        }
+                    }
+                }
+            }
+        }
+        self.trivec_tmp.clear();
+        self.trivec_tmp.extend(self.trivec.iter().cloned());
+        self.bindings.vertex_buffers[0].update(ctx, &self.trivec);
+        self.intenal_state = InternalState::GeneratingAO { subgroup_no: 0, sample_no: 0 };
     }
 
     fn integrate_vertex(&self, ix: usize, ray_dir: Vector<Real>) -> f32 {
@@ -452,21 +459,49 @@ impl VoxelMesh {
             Ray::new(origin, -ray_dir)
         };
 
-        for aabb_entry in self.aabb_storage.iter().flat_map(|it| it.iter()).flat_map(|it| it.iter())
-            .filter_map(|it| *it)
-            .filter(|it| it.aabb.intersects_local_ray(&next_ray, RAY_LENGTH) )
-        {
-            for offset in (aabb_entry.start_vertex_id..=aabb_entry.end_vertex_id).step_by(3) {
-                let next_triangle = Triangle::new(
-                    self.trivec[offset].position.into(),
-                    self.trivec[offset + 1].position.into(),
-                    self.trivec[offset + 2].position.into()
-                );
+        let range_p: Point<Real> = [self.width as f32, self.height as f32 * 2.0, self.depth as f32].into();
+        for j0 in 0..4 {
+            for i0 in 0..4 {
+                let aabb = AABB {
+                    mins: [
+                        -range_p.x + i0 as f32 * range_p.x / 2.0 - 1.0,
+                        - 1.0,
+                        range_p.z - (j0 + 1) as f32 * range_p.z / 2.0 - 1.0
+                    ].into(),
+                    maxs: [
+                        -range_p.x + (i0 + 1) as f32 * range_p.x / 2.0 + 1.0,
+                        range_p.y + 1.0,
+                        range_p.z - j0 as f32 * range_p.z / 2.0 + 1.0
+                    ].into()
+                };
+                if !aabb.intersects_local_ray(&next_ray, RAY_LENGTH) {
+                    continue;
+                }
 
-                let is_not_culled = -(next_triangle.normal().unwrap()).dot(&next_ray.dir) < 0.0;
+                for k in 0..self.height {
+                    for j in (j0 * self.depth/4)..((j0 + 1) * self.depth/4).min(self.depth) {
+                        for i in (i0 * self.width/4)..((i0 + 1) * self.width/4).min(self.width) {
+                            match self.aabb_storage[k][j][i] {
+                                Some(aabb_entry)
+                                if aabb_entry.aabb.intersects_local_ray(&next_ray, RAY_LENGTH) => {
+                                    for offset in (aabb_entry.start_vertex_id..=aabb_entry.end_vertex_id).step_by(3) {
+                                        let next_triangle = Triangle::new(
+                                            self.trivec[offset].position.into(),
+                                            self.trivec[offset + 1].position.into(),
+                                            self.trivec[offset + 2].position.into()
+                                        );
 
-                if is_not_culled && next_triangle.intersects_local_ray(&next_ray, RAY_LENGTH) {
-                    return true;
+                                        let is_not_culled = -(next_triangle.normal().unwrap()).dot(&next_ray.dir) < 0.0;
+
+                                        if is_not_culled && next_triangle.intersects_local_ray(&next_ray, RAY_LENGTH) {
+                                            return true;
+                                        }
+                                    }
+                                },
+                                _ => {}
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -542,14 +577,7 @@ mod shader {
             att * vec3(1.0, 0.65, 0.5)
         );
 
-        lowp vec3 half_dir = (view_dir + ld_opposite) / 2.0;
-        lowp float spec_angle = max(dot(half_dir, normal), 0.0);
-        lowp float specular = pow(spec_angle, 48.0) * step(0.05, att) * is_water * 0.3;
-
-        frag_color = vec4(
-            diffuse + vec3(specular),
-            1.0
-        );
+        frag_color = vec4(diffuse, 1.0);
     }
     "#;
 
