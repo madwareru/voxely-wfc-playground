@@ -1,19 +1,19 @@
 use std::collections::HashMap;
 
-#[derive(PartialEq, Eq, Hash, Copy, Clone, serde::Deserialize)]
+#[derive(PartialEq, Eq, Hash, Copy, Clone, serde::Deserialize, Debug)]
 pub enum CellType {
     Ground,
     Water,
     Air
 }
 
-#[derive(PartialEq, Eq, Hash, Copy, Clone, serde::Deserialize)]
+#[derive(PartialEq, Eq, Hash, Copy, Clone, serde::Deserialize, Debug)]
 pub struct TileConfigEntryColumn {
     pub bottom: CellType,
     pub up: CellType
 }
 
-#[derive(PartialEq, Eq, Hash, Copy, Clone, serde::Deserialize)]
+#[derive(PartialEq, Eq, Hash, Copy, Clone, serde::Deserialize, Debug)]
 pub struct TileConfigEntry {
     pub north_east: TileConfigEntryColumn,
     pub north_west: TileConfigEntryColumn,

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 use std::time::Instant;
@@ -13,7 +13,7 @@ use parry3d::math::{Point, Real, Vector};
 use crate::selection_point_grid::SelectionPointGrid;
 use crate::tile_config::{CellType, TileConfigEntry, TileConfigEntryColumn};
 use crate::utility::StopWatch;
-use crate::voxel_mesh::VoxelMesh;
+use crate::voxel_mesh::{CheckedSetPolicy, VoxelMesh};
 
 type CustomBitSet = [u8; 32];
 
@@ -26,6 +26,14 @@ const NEAR_PLANE: f32 = 0.01;
 const FAR_PLANE: f32 = 250.0;
 const MAX_X_ROT: f32 = std::f32::consts::PI / 4.0;
 const MIN_X_ROT: f32 = -std::f32::consts::PI / 6.0;
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum EditMode {
+    AddAltitude,
+    DecreaseAltitude,
+    DrawWater,
+    Grab
+}
 
 trait Lerp : Copy {
     fn lerp(self, other: &Self, t: f32) -> Self;
@@ -55,6 +63,7 @@ pub struct CollapseDemoStage {
     air_module_id: usize,
     piece_tile_configs: Vec<TileConfigEntry>,
     voxel_mesh: VoxelMesh,
+    selected_tile: Option<[usize; 3]>,
     selection_grid: SelectionPointGrid,
     view_proj: Mat4,
     mouse_x: f32,
@@ -63,12 +72,17 @@ pub struct CollapseDemoStage {
     grab_start_mouse_y: Option<f32>,
     compound_results_receiver: Receiver<Result<Vec<usize>, WfcError>>,
     compound_results_transmitter: Sender<Result<Vec<usize>, WfcError>>,
-    can_grab: bool,
+    distance: f32,
+    pos_shift: (f32, f32),
     ry: f32,
     rx: f32,
+    delta_time: f32,
     time: f32,
     grab_start_ry: Option<f32>,
-    grab_start_rx: Option<f32>
+    grab_start_rx: Option<f32>,
+    ao_generation_is_on: bool,
+    edit_mode: EditMode,
+    pressed_keys: HashSet<KeyCode>
 }
 
 impl CollapseDemoStage {
@@ -89,19 +103,19 @@ impl CollapseDemoStage {
             .insert(0, "JetBrains Mono".to_owned());
 
         if let Some(setting) = fonts.family_and_size.get_mut(&TextStyle::Button) {
-            *setting = (FontFamily::Monospace, 24.0);
+            *setting = (FontFamily::Monospace, 18.0);
         }
         if let Some(setting) = fonts.family_and_size.get_mut(&TextStyle::Heading) {
-            *setting = (FontFamily::Monospace, 32.0);
+            *setting = (FontFamily::Monospace, 24.0);
         }
         if let Some(setting) = fonts.family_and_size.get_mut(&TextStyle::Monospace) {
-            *setting = (FontFamily::Monospace, 24.0);
+            *setting = (FontFamily::Monospace, 18.0);
         }
         if let Some(setting) = fonts.family_and_size.get_mut(&TextStyle::Body) {
-            *setting = (FontFamily::Monospace, 24.0);
+            *setting = (FontFamily::Monospace, 18.0);
         }
         if let Some(setting) = fonts.family_and_size.get_mut(&TextStyle::Small) {
-            *setting = (FontFamily::Monospace, 24.0);
+            *setting = (FontFamily::Monospace, 16.0);
         }
 
         egui.egui_ctx().set_fonts(fonts);
@@ -227,13 +241,19 @@ impl CollapseDemoStage {
             pieces_for_voxel_mesh.insert(piece_tile_configs[i], vec);
         }
 
-        let voxel_mesh = VoxelMesh::new(
+        let mut voxel_mesh = VoxelMesh::new(
             ctx,
             pieces_for_voxel_mesh,
             x_size,
             z_size,
             y_size
         );
+
+        for j in 0..=z_size {
+            for i in 0..=x_size {
+                voxel_mesh.set_grid_vertex_unchecked(i, j, 0, CellType::Ground);
+            }
+        }
 
         let view_proj = pitch_yaw_camera_view_mat(
             [0.0, 25.0, -25.0].into(), 45.0f32.to_radians(), 0.0,
@@ -257,23 +277,33 @@ impl CollapseDemoStage {
             view_proj,
             mouse_x: 0.0,
             mouse_y: 0.0,
-            can_grab: false,
             grab_start_mouse_x: None,
             grab_start_mouse_y: None,
             time: 0.0,
+            delta_time: 0.0,
+            distance: 25.0,
+            pos_shift: (0.0, 0.0),
             ry: 0.0,
             rx: 0.3,
             grab_start_ry: None,
-            grab_start_rx: None
+            grab_start_rx: None,
+            selected_tile: None,
+            ao_generation_is_on: false,
+            edit_mode: EditMode::Grab,
+            pressed_keys: HashSet::new()
         };
 
-        res.generate_map();
+        //res.generate_map();
 
         res
     }
 
+    fn can_grab(&self) -> bool {
+        self.edit_mode == EditMode::Grab || self.pressed_keys.contains(&KeyCode::Space)
+    }
+
     pub fn generate_map(&mut self) {
-        let _sw = StopWatch::named("generating a map");
+        //let _sw = StopWatch::named("generating a map");
         self.collapse();
     }
 
@@ -297,7 +327,8 @@ impl CollapseDemoStage {
         }
 
         egui::Window::new("menu")
-            .anchor(Align2::CENTER_TOP, [0.0, 0.0])
+            .anchor(Align2::LEFT_TOP, [0.0, 0.0])
+            .default_width(44.0)
             .show(&egui_ctx, |ui| {
                 ui.vertical_centered_justified(|ui| {
                     if ui.button("Generate").clicked() {
@@ -308,6 +339,51 @@ impl CollapseDemoStage {
 
                     if ui.button("Quit (esc)").clicked() {
                         std::process::exit(0);
+                    }
+                });
+            });
+
+        egui::Window::new("settings")
+            .anchor(Align2::RIGHT_TOP, [0.0, 0.0])
+            .default_width(55.0)
+            .show(&egui_ctx, |ui| {
+                ui.vertical_centered_justified(|ui| {
+                    ui.checkbox(&mut self.ao_generation_is_on, "Update AO        ");
+
+                    ui.separator();
+
+                    ui.label("Current tool:");
+                    if ui.add(
+                        egui::RadioButton::new(
+                            self.edit_mode == EditMode::AddAltitude,
+                            "Add altitude     "
+                        )
+                    ).clicked() {
+                        self.edit_mode = EditMode::AddAltitude;
+                    }
+                    if ui.add(
+                        egui::RadioButton::new(
+                            self.edit_mode == EditMode::DecreaseAltitude,
+                            "Decrease altitude"
+                        )
+                    ).clicked() {
+                        self.edit_mode = EditMode::DecreaseAltitude;
+                    }
+                    if ui.add(
+                        egui::RadioButton::new(
+                            self.edit_mode == EditMode::DrawWater,
+                            "Draw water       "
+                        )
+                    ).clicked() {
+                        self.edit_mode = EditMode::DrawWater;
+                    }
+                    if ui.add(
+                        egui::RadioButton::new(
+                            self.edit_mode == EditMode::Grab,
+                            "Grab             "
+                        )
+                    ).clicked() {
+                        self.edit_mode = EditMode::Grab;
                     }
                 });
             });
@@ -358,6 +434,7 @@ impl orom_miniquad::EventHandler for CollapseDemoStage {
     fn update(&mut self, ctx: &mut Context) {
         let next_instant = Instant::now();
         let elapsed = next_instant - self.instant;
+        self.delta_time = elapsed.as_secs_f32();
         self.time += elapsed.as_secs_f32();
         self.instant = next_instant;
 
@@ -365,6 +442,19 @@ impl orom_miniquad::EventHandler for CollapseDemoStage {
             (self.grab_start_mouse_x, self.grab_start_mouse_y, self.grab_start_ry, self.grab_start_rx) {
             self.ry = grab_start_ry + (self.mouse_x - grab_start_x) / 100.0;
             self.rx = (grab_start_rx + (self.mouse_y - grab_start_y) / 300.0).clamp(0.0, 1.0);
+        }
+
+        if self.pressed_keys.contains(&KeyCode::W) {
+            self.pos_shift.1 += self.delta_time * 10.0;
+        }
+        if self.pressed_keys.contains(&KeyCode::D) {
+            self.pos_shift.0 += self.delta_time * 10.0;
+        }
+        if self.pressed_keys.contains(&KeyCode::A) {
+            self.pos_shift.0 -= self.delta_time * 10.0;
+        }
+        if self.pressed_keys.contains(&KeyCode::S) {
+            self.pos_shift.1 -= self.delta_time * 10.0;
         }
 
         match self.compound_results_receiver.try_recv() {
@@ -384,10 +474,10 @@ impl orom_miniquad::EventHandler for CollapseDemoStage {
             _ => {}
         }
 
-        self.voxel_mesh.update(ctx);
+        self.voxel_mesh.update(ctx, self.ao_generation_is_on);
 
         self.view_proj = pitch_yaw_camera_view_mat(
-            [0.0, 25.0, -25.0].into(), 45.0f32.to_radians(), 0.0,
+            [0.0, self.distance, -self.distance].into(), 45.0f32.to_radians(), 0.0,
             60.0f32.to_radians(), ctx.screen_size().0 / ctx.screen_size().1, NEAR_PLANE, FAR_PLANE
         );
         let remapped_mouse_coords = (
@@ -410,8 +500,8 @@ impl orom_miniquad::EventHandler for CollapseDemoStage {
         let dir: Vector<Real> = [dir.x, dir.y, dir.z].into();
         let dir = dir.normalize();
 
-        let selected_tile = self.voxel_mesh.get_cell_by_ray(origin, dir);
-        self.selection_grid.update(ctx, &self.voxel_mesh, selected_tile.map(|it| it.1));
+        self.selected_tile = self.voxel_mesh.get_cell_by_ray(origin, dir);
+        self.selection_grid.update(ctx, &self.voxel_mesh, self.selected_tile);
     }
 
     fn draw(&mut self, ctx: &mut Context) {
@@ -431,8 +521,10 @@ impl orom_miniquad::EventHandler for CollapseDemoStage {
             });
 
             self.voxel_mesh.draw(ctx, self.view_proj, model, self.time);
-            self.selection_grid.draw(ctx, self.view_proj, model);
 
+            if !self.can_grab() {
+                self.selection_grid.draw(ctx, self.view_proj, model);
+            }
             ctx.end_render_pass();
         }
 
@@ -447,7 +539,7 @@ impl orom_miniquad::EventHandler for CollapseDemoStage {
         self.mouse_x = x;
         self.mouse_y = y;
         self.egui.mouse_motion_event(ctx, x, y);
-        if self.egui.egui_ctx().is_pointer_over_area() && self.can_grab {
+        if self.egui.egui_ctx().is_pointer_over_area() && self.can_grab() {
             self.grab_start_mouse_x = None;
             self.grab_start_mouse_y = None;
             self.grab_start_ry = None;
@@ -457,12 +549,13 @@ impl orom_miniquad::EventHandler for CollapseDemoStage {
 
     fn mouse_wheel_event(&mut self, ctx: &mut Context, dx: f32, dy: f32) {
         self.egui.mouse_wheel_event(ctx, dx, dy);
+        self.distance = (self.distance - self.delta_time * 10.0 * dy).clamp(18.0, 50.0);
     }
 
     fn mouse_button_down_event(&mut self, ctx: &mut Context, button: MouseButton, x: f32, y: f32) {
         self.egui.mouse_button_down_event(ctx, button, x, y);
         if !self.egui.egui_ctx().is_pointer_over_area() {
-            if let( true, MouseButton::Left ) = (self.can_grab, button) {
+            if let( true, MouseButton::Left ) = (self.can_grab(), button) {
                 self.grab_start_mouse_x = Some(self.mouse_x);
                 self.grab_start_mouse_y = Some(self.mouse_y);
                 self.grab_start_ry = Some(self.ry);
@@ -474,47 +567,88 @@ impl orom_miniquad::EventHandler for CollapseDemoStage {
     fn mouse_button_up_event(&mut self, ctx: &mut Context, button: MouseButton, x: f32, y: f32) {
         self.egui.mouse_button_up_event(ctx, button, x, y);
         if !self.egui.egui_ctx().is_pointer_over_area() {
-            if let( true, MouseButton::Left ) = (self.can_grab, button) {
-                self.grab_start_mouse_x = None;
-                self.grab_start_mouse_y = None;
-                self.grab_start_ry = None;
-                self.grab_start_rx = None;
+            match button {
+                MouseButton::Left => {
+                    match self.edit_mode {
+                        EditMode::AddAltitude if !self.can_grab() => {
+                            match self.selected_tile {
+                                Some([i, j, k]) if self.voxel_mesh.get_cell_data(i, j, k).eq(&CellType::Ground) => {
+                                    if k < self.y_size - 1 {
+                                        self.voxel_mesh.set_grid_vertex_unchecked(i, j, k+1, CellType::Ground);
+                                    }
+                                },
+                                Some([i, j, k]) if self.voxel_mesh.get_cell_data(i, j, k).eq(&CellType::Water) => {
+                                    self.voxel_mesh.set_column_unchecked(i, j, CellType::Ground);
+                                },
+                                _ => {}
+                            }
+                        }
+                        EditMode::DecreaseAltitude if !self.can_grab() => {
+                            match self.selected_tile {
+                                Some([i, j, k]) if self.voxel_mesh.get_cell_data(i, j, k).eq(&CellType::Ground) => {
+                                    self.voxel_mesh.set_grid_vertex_unchecked(i, j, k, CellType::Air);
+                                },
+                                Some([i, j, k]) if self.voxel_mesh.get_cell_data(i, j, k).eq(&CellType::Water) => {
+                                    self.voxel_mesh.set_column_unchecked(i, j, CellType::Ground);
+                                    self.voxel_mesh.set_grid_vertex_unchecked(i, j, k, CellType::Air);
+                                },
+                                _ => {}
+                            }
+                        }
+                        EditMode::DrawWater if !self.can_grab() => {
+                            match self.selected_tile {
+                                Some([i, j, k]) if self.voxel_mesh.get_cell_data(i, j, k).eq(&CellType::Ground) => {
+                                    self.voxel_mesh.set_column_unchecked(
+                                        i, j,
+                                        CellType::Water
+                                    );
+                                },
+                                _ => {}
+                            }
+                        }
+                        _ if self.can_grab() => {
+                            self.grab_start_mouse_x = None;
+                            self.grab_start_mouse_y = None;
+                            self.grab_start_ry = None;
+                            self.grab_start_rx = None;
+                        },
+                        _ => {}
+                    }
+                },
+                _ => {}
             }
         }
     }
 
-    fn char_event(&mut self, _ctx: &mut Context, character: char, _keymods: KeyMods, repeat: bool) {
+    fn char_event(&mut self, _ctx: &mut Context, character: char, _keymods: KeyMods, _repeat: bool) {
         self.egui.char_event(character);
         if self.egui.egui_ctx().wants_keyboard_input() { return; }
-        if character == '~' && !repeat {
-            //self.show_ui = !self.show_ui;
-        }
     }
 
     fn key_down_event(&mut self, ctx: &mut Context, keycode: KeyCode, keymods: KeyMods, _repeat: bool,) {
         self.egui.key_down_event(ctx, keycode, keymods);
+        self.pressed_keys.insert(keycode);
         match keycode {
             KeyCode::Escape => {
                 ctx.quit()
             },
-            KeyCode::Space => {
-                self.can_grab = true;
-            }
             _ => {}
         }
     }
 
     fn key_up_event(&mut self, _ctx: &mut Context, keycode: KeyCode, keymods: KeyMods) {
         self.egui.key_up_event(keycode, keymods);
+        self.pressed_keys.remove(&keycode);
         match keycode {
-            KeyCode::Enter => { self.generate_map(); },
             KeyCode::Space => {
-                self.can_grab = false;
-                self.grab_start_mouse_x = None;
-                self.grab_start_mouse_y = None;
-                self.grab_start_ry = None;
-                self.grab_start_rx = None;
-            }
+                if self.edit_mode != EditMode::Grab {
+                    self.grab_start_mouse_x = None;
+                    self.grab_start_mouse_y = None;
+                    self.grab_start_ry = None;
+                    self.grab_start_rx = None;
+                }
+            },
+            KeyCode::Enter => { self.generate_map(); },
             _ => {}
         }
     }

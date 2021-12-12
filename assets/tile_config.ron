@@ -102,6 +102,12 @@
             south_west: (bottom: Ground, up: Air)
         ),
 
+        31: (
+            north_east: (bottom: Ground, up: Ground),
+            north_west: (bottom: Ground, up: Air),
+            south_east: (bottom: Air, up: Air),
+            south_west: (bottom: Ground, up: Ground)
+        ),
         32: (
             north_east: (bottom: Ground, up: Ground),
             north_west: (bottom: Ground, up: Air),

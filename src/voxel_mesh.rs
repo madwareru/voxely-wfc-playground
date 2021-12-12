@@ -8,7 +8,7 @@ use parry3d::query::{Ray, RayCast, RayIntersection};
 use parry3d::shape::{FeatureId, Triangle};
 use rayon::prelude::IntoParallelIterator;
 use crate::geometry::VertexData;
-use crate::tile_config::{CellType, TileConfigEntry};
+use crate::tile_config::{CellType, TileConfigEntry, TileConfigEntryColumn};
 use crate::utility::{StopWatch};
 use rayon::iter::ParallelIterator;
 use rayon::iter::IndexedParallelIterator;
@@ -69,7 +69,7 @@ impl VoxelMesh {
          &self,
          origin: Point<Real>,
          direction: Vector<Real>
-    ) -> Option<(Point<Real>, [usize; 3])> {
+    ) -> Option<[usize; 3]> {
         let mut min_dist = None;
         let mut result = None;
 
@@ -127,7 +127,7 @@ impl VoxelMesh {
                 if let Some([i, j, k]) = min_ijk {
                     if min_dist.is_none() || min_dist.unwrap() > t {
                         min_dist = Some(t);
-                        result = Some((point, [i, j, k]));
+                        result = Some([i, j, k]);
                     }
                 }
             }
@@ -135,6 +135,11 @@ impl VoxelMesh {
 
         result
     }
+}
+
+pub enum CheckedSetPolicy {
+    ReplaceWaterWithGroundOnFailure,
+    DontSetOnFailure
 }
 
 impl VoxelMesh {
@@ -242,6 +247,110 @@ impl VoxelMesh {
         self.grid_data[k][j][i] = value;
     }
 
+    pub fn set_column_unchecked(
+        &mut self,
+        i: usize,
+        j: usize,
+        value: super::tile_config::CellType
+    ) {
+        self.is_dirty = true;
+        let mut k = 0;
+        while self.grid_data[k][j][i] != CellType::Air && k < self.height {
+            self.grid_data[k][j][i] = value;
+            k += 1;
+        }
+    }
+
+    pub fn set_column_checked(
+        &mut self,
+        i: usize,
+        j: usize,
+        value: super::tile_config::CellType,
+        set_policy: CheckedSetPolicy
+    ) {
+        let mut k = 0;
+        let mut fail = false;
+        while self.grid_data[k][j][i] != CellType::Air && k < self.height {
+            if i < self.width && j < self.height {
+                let tile_data = self.get_tile_config_entry(i, j, k);
+                let tile_data = TileConfigEntry {
+                    south_west: TileConfigEntryColumn {
+                        bottom: value,
+                        up: if tile_data.south_west.up == CellType::Air {
+                            CellType::Air
+                        } else {
+                            value
+                        }
+                    },
+                    ..tile_data
+                };
+                if !self.pieces.contains_key(&tile_data) {
+                    fail = true;
+                    break;
+                }
+            }
+            if i > 0 && j > 0 {
+                let tile_data = self.get_tile_config_entry(i-1, j-1, k);
+                let tile_data = TileConfigEntry {
+                    north_east: TileConfigEntryColumn {
+                        bottom: value,
+                        up: if tile_data.north_east.up == CellType::Air {
+                            CellType::Air
+                        } else {
+                            value
+                        }
+                    },
+                    ..tile_data
+                };
+                if !self.pieces.contains_key(&tile_data) {
+                    fail = true;
+                    break;
+                }
+            }
+            if i > 0 {
+                let tile_data = self.get_tile_config_entry(i-1, j, k);
+                let tile_data = TileConfigEntry {
+                    south_east: TileConfigEntryColumn {
+                        bottom: value,
+                        up: if tile_data.south_east.up == CellType::Air {
+                            CellType::Air
+                        } else {
+                            value
+                        }
+                    },
+                    ..tile_data
+                };
+                if !self.pieces.contains_key(&tile_data) {
+                    fail = true;
+                    break;
+                }
+            }
+            if j > 0 {
+                let tile_data = self.get_tile_config_entry(i, j-1, k);
+                let tile_data = TileConfigEntry {
+                    north_west: TileConfigEntryColumn {
+                        bottom: value,
+                        up: if tile_data.north_west.up == CellType::Air {
+                            CellType::Air
+                        } else {
+                            value
+                        }
+                    },
+                    ..tile_data
+                };
+                if !self.pieces.contains_key(&tile_data) {
+                    fail = true;
+                    break;
+                }
+            }
+            k += 1;
+        }
+        match (fail, set_policy) {
+            (false, _) => self.set_column_unchecked(i, j, value),
+            _ => {}
+        }
+    }
+
     pub fn set_tile_unchecked(
         &mut self,
         i: usize,
@@ -300,20 +409,19 @@ impl VoxelMesh {
         }
     }
 
-    pub fn update(&mut self, ctx: &mut orom_miniquad::Context) {
+    pub fn update(&mut self, ctx: &mut orom_miniquad::Context, ao_generation_is_on: bool) {
+        if self.is_dirty {
+            self.intenal_state = InternalState::Pending;
+        }
         match self.intenal_state {
             InternalState::Pending => self.prepare_mesh(ctx),
-            InternalState::GeneratingAO { .. } => {
-                let _sw = StopWatch::named("generate ao");
+            InternalState::GeneratingAO { .. } if ao_generation_is_on => {
+                //let _sw = StopWatch::named("generate ao");
                 for _ in 0..AO_TICKS_PER_FRAME {
                     self.tick_ao_generation(ctx);
                 }
             },
-            InternalState::Ready => {
-                if self.is_dirty {
-                    self.intenal_state = InternalState::Pending;
-                }
-            }
+            _ => {}
         }
     }
 
@@ -419,6 +527,12 @@ impl VoxelMesh {
                             };
                             self.trivec.push(v);
                         }
+                    } else if !(
+                        entry.eq(&TileConfigEntry::all_of_type(CellType::Air)) ||
+                        entry.eq(&TileConfigEntry::all_of_type(CellType::Ground)) ||
+                        entry.eq(&TileConfigEntry::all_of_type(CellType::Water))
+                    ) {
+                        println!("A matching tile was not found for {:?}", &entry);
                     }
                 }
             }
