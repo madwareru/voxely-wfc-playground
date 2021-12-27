@@ -293,6 +293,8 @@ impl CollapseDemoStage {
             pressed_keys: HashSet::new()
         };
 
+        puffin::set_scopes_on(true);
+
         //res.generate_map();
 
         res
@@ -309,6 +311,8 @@ impl CollapseDemoStage {
 
     fn ui(&mut self) {
         let egui_ctx = self.egui.egui_ctx().clone();
+
+        puffin_egui::profiler_window(&egui_ctx);
 
         if let Some(progress) = self.voxel_mesh.get_ao_baking_progress() {
             egui::Area::new("ao")
@@ -432,6 +436,8 @@ impl CollapseDemoStage {
 
 impl orom_miniquad::EventHandler for CollapseDemoStage {
     fn update(&mut self, ctx: &mut Context) {
+        puffin::profile_function!();
+        puffin::GlobalProfiler::lock().new_frame();
         let next_instant = Instant::now();
         let elapsed = next_instant - self.instant;
         self.delta_time = elapsed.as_secs_f32();
@@ -505,6 +511,7 @@ impl orom_miniquad::EventHandler for CollapseDemoStage {
     }
 
     fn draw(&mut self, ctx: &mut Context) {
+        puffin::profile_function!();
         self.egui.begin_frame(ctx);
         self.ui();
         self.egui.end_frame(ctx);

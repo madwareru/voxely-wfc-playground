@@ -159,6 +159,7 @@ impl SelectionPointGrid {
         voxel_mesh: &VoxelMesh,
         selection: Option<[usize; 3]>
     ) {
+        puffin::profile_function!();
         let mut offset = 0;
         for k in 0..self.height {
             for j in 0..=self.depth {

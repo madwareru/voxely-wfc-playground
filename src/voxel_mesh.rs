@@ -13,9 +13,9 @@ use crate::utility::{StopWatch};
 use rayon::iter::ParallelIterator;
 use rayon::iter::IndexedParallelIterator;
 
-const NUM_SAMPLES: usize = 128;
-const SUB_GROUP_SIZE: usize = 3000;
-const AO_TICKS_PER_FRAME: usize = 8;
+const NUM_SAMPLES: usize = 32;
+const SUB_GROUP_SIZE: usize = 1500;
+const AO_TICKS_PER_FRAME: usize = 1;
 
 #[derive(Copy, Clone)]
 struct AaBbEntry {
@@ -410,13 +410,13 @@ impl VoxelMesh {
     }
 
     pub fn update(&mut self, ctx: &mut orom_miniquad::Context, ao_generation_is_on: bool) {
+        puffin::profile_function!();
         if self.is_dirty {
             self.intenal_state = InternalState::Pending;
         }
         match self.intenal_state {
             InternalState::Pending => self.prepare_mesh(ctx),
             InternalState::GeneratingAO { .. } if ao_generation_is_on => {
-                //let _sw = StopWatch::named("generate ao");
                 for _ in 0..AO_TICKS_PER_FRAME {
                     self.tick_ao_generation(ctx);
                 }
@@ -532,7 +532,7 @@ impl VoxelMesh {
                         entry.eq(&TileConfigEntry::all_of_type(CellType::Ground)) ||
                         entry.eq(&TileConfigEntry::all_of_type(CellType::Water))
                     ) {
-                        println!("A matching tile was not found for {:?}", &entry);
+                        // println!("A matching tile was not found for {:?}", &entry);
                     }
                 }
             }
@@ -599,6 +599,37 @@ impl VoxelMesh {
                                 Some(aabb_entry)
                                 if aabb_entry.aabb.intersects_local_ray(&next_ray, RAY_LENGTH) => {
                                     for offset in (aabb_entry.start_vertex_id..=aabb_entry.end_vertex_id).step_by(3) {
+                                        {
+                                            let tri_aabb = AABB {
+                                                mins: [
+                                                    self.trivec[offset].position[0]
+                                                        .min(self.trivec[offset + 1].position[0])
+                                                        .min(self.trivec[offset + 2].position[0]),
+                                                    self.trivec[offset].position[1]
+                                                        .min(self.trivec[offset + 1].position[1])
+                                                        .min(self.trivec[offset + 2].position[1]),
+                                                    self.trivec[offset].position[2]
+                                                        .min(self.trivec[offset + 1].position[2])
+                                                        .min(self.trivec[offset + 2].position[2])
+                                                ].into(),
+                                                maxs: [
+                                                    self.trivec[offset].position[0]
+                                                        .max(self.trivec[offset + 1].position[0])
+                                                        .max(self.trivec[offset + 2].position[0]),
+                                                    self.trivec[offset].position[1]
+                                                        .max(self.trivec[offset + 1].position[1])
+                                                        .max(self.trivec[offset + 2].position[1]),
+                                                    self.trivec[offset].position[2]
+                                                        .max(self.trivec[offset + 1].position[2])
+                                                        .max(self.trivec[offset + 2].position[2])
+                                                ].into()
+                                            };
+
+                                            if !tri_aabb.intersects_local_ray(&next_ray, RAY_LENGTH) {
+                                                continue;
+                                            }
+                                        }
+
                                         let next_triangle = Triangle::new(
                                             self.trivec[offset].position.into(),
                                             self.trivec[offset + 1].position.into(),
